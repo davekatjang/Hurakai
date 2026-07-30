@@ -1,0 +1,572 @@
+import Foundation
+import CoreLocation
+import MapKit
+
+typealias Coord = CLLocationCoordinate2D
+
+/// Smallest region containing `coords`, padded a little.
+func regionCovering(_ coords: [Coord], padding: Double = 1.45) -> MKCoordinateRegion? {
+    guard !coords.isEmpty else { return nil }
+    let lats = coords.map(\.latitude)
+    var lons = coords.map(\.longitude)
+    // ponytail: shift to 0..360 when the set straddles the antimeridian; Central Pacific
+    // storms cross 180 and naive min/max would zoom out to the whole planet.
+    if let lo = lons.min(), let hi = lons.max(), hi - lo > 180 {
+        lons = lons.map { $0 < 0 ? $0 + 360 : $0 }
+    }
+    guard let minLat = lats.min(), let maxLat = lats.max(),
+          let minLon = lons.min(), let maxLon = lons.max() else { return nil }
+    var centerLon = (minLon + maxLon) / 2
+    if centerLon > 180 { centerLon -= 360 }
+    return MKCoordinateRegion(
+        center: Coord(latitude: (minLat + maxLat) / 2, longitude: centerLon),
+        span: MKCoordinateSpan(
+            latitudeDelta: min(max((maxLat - minLat) * padding, 6), 120),
+            longitudeDelta: min(max((maxLon - minLon) * padding, 6), 200)))
+}
+
+// MARK: - Minimal GeoJSON
+// ponytail: one recursive coordinate type instead of per-geometry structs. Handles
+// Point / LineString / Polygon / MultiLineString / MultiPolygon uniformly.
+
+indirect enum GJCoords: Decodable {
+    case n(Double)
+    case a([GJCoords])
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if let v = try? c.decode(Double.self) { self = .n(v) } else { self = .a(try c.decode([GJCoords].self)) }
+    }
+
+    var coord: Coord? {
+        guard case .a(let i) = self, i.count >= 2,
+              case .n(let lon) = i[0], case .n(let lat) = i[1],
+              lat.isFinite, lon.isFinite, abs(lat) <= 90 else { return nil }
+        return Coord(latitude: lat, longitude: lon)
+    }
+
+    /// Point -> [[p]]; LineString -> [pts]; Polygon/Multi* -> one entry per ring or line.
+    var paths: [[Coord]] {
+        if let p = coord { return [[p]] }
+        guard case .a(let items) = self else { return [] }
+        let pts = items.compactMap(\.coord)
+        if !pts.isEmpty, pts.count == items.count { return [pts] }
+        return items.flatMap(\.paths)
+    }
+}
+
+enum GJValue: Decodable {
+    case s(String), n(Double), b(Bool), null
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() { self = .null }
+        else if let v = try? c.decode(Double.self) { self = .n(v) }
+        else if let v = try? c.decode(Bool.self) { self = .b(v) }
+        else if let v = try? c.decode(String.self) { self = .s(v) }
+        else { self = .null }
+    }
+
+    var string: String? {
+        switch self {
+        case .s(let v): return v.isEmpty ? nil : v
+        case .n(let v): return v == v.rounded() && abs(v) < 1e15 ? String(Int(v)) : String(v)
+        case .b(let v): return String(v)
+        case .null: return nil
+        }
+    }
+
+    var double: Double? {
+        switch self {
+        case .n(let v): return v
+        case .s(let v): return Double(v)
+        default: return nil
+        }
+    }
+
+    var int: Int? {
+        guard let d = double, d.isFinite, abs(d) < 1e15 else { return nil }
+        return Int(d)
+    }
+}
+
+struct GJGeometry: Decodable {
+    let type: String?
+    let coordinates: GJCoords?
+}
+
+struct GJFeature: Decodable {
+    let properties: [String: GJValue]?
+    let geometry: GJGeometry?
+
+    func str(_ key: String) -> String? { properties?[key]?.string }
+    func int(_ key: String) -> Int? { properties?[key]?.int }
+    var paths: [[Coord]] { geometry?.coordinates?.paths ?? [] }
+    var point: Coord? { paths.first?.first }
+}
+
+struct GJCollection: Decodable {
+    let features: [GJFeature]?
+}
+
+/// Lenient numeric decode — the live NHC feed is not consistent about quoting numbers.
+struct LooseInt: Decodable {
+    let value: Int?
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() { value = nil }
+        else if let i = try? c.decode(Int.self) { value = i }
+        else if let d = try? c.decode(Double.self) { value = d.isFinite ? Int(d) : nil }
+        else if let s = try? c.decode(String.self) {
+            let t = s.trimmingCharacters(in: .whitespaces)
+            value = Int(t) ?? Double(t).map { Int($0) }
+        } else { value = nil }
+    }
+}
+
+// MARK: - Domain
+
+enum Basin: String, CaseIterable {
+    case ep = "EP", cp = "CP", al = "AL"
+
+    var label: String {
+        switch self {
+        case .ep: return "Eastern Pacific"
+        case .cp: return "Central Pacific"
+        case .al: return "Atlantic"
+        }
+    }
+
+    /// Tropical Tidbits / ATCF basin suffix.
+    var atcfSuffix: String {
+        switch self {
+        case .ep: return "E"
+        case .cp: return "C"
+        case .al: return "L"
+        }
+    }
+
+    var isPacific: Bool { self != .al }
+}
+
+struct Storm: Identifiable {
+    let id: String            // "ep072026"
+    let bin: String           // "EP2" — the GIS layer key
+    let name: String
+    let classification: String   // HU, TS, TD, PTC, STS, STD, LO, DB
+    let basin: Basin
+    let stormNumber: Int
+    let year: Int
+    let windKt: Int
+    let gustKt: Int?
+    let pressureMb: Int?
+    let coord: Coord
+    let movementDir: Int?
+    let movementKt: Int?
+    let lastUpdate: Date?
+    let advisoryNumber: String?
+    let products: [Product]
+
+    struct Product: Identifiable, Hashable {
+        let name: String
+        let url: URL
+        var id: String { name }
+    }
+
+    /// Saffir-Simpson category; 0 means below hurricane force.
+    var category: Int {
+        guard isHurricaneType else { return 0 }
+        switch windKt {
+        case 137...: return 5
+        case 113...136: return 4
+        case 96...112: return 3
+        case 83...95: return 2
+        case 64...82: return 1
+        default: return 0
+        }
+    }
+
+    var isHurricaneType: Bool { ["HU", "MH", "TY", "STY"].contains(classification) }
+
+    var typeLabel: String {
+        switch classification {
+        case "HU", "MH": return basin == .al ? "Hurricane" : "Hurricane"
+        case "TY": return "Typhoon"
+        case "STY": return "Super Typhoon"
+        case "TS": return "Tropical Storm"
+        case "STS": return "Subtropical Storm"
+        case "TD": return "Tropical Depression"
+        case "STD": return "Subtropical Depression"
+        case "PTC": return "Post-Tropical Cyclone"
+        case "PT": return "Post-Tropical Cyclone"
+        case "LO": return "Remnant Low"
+        case "DB": return "Disturbance"
+        default: return classification
+        }
+    }
+
+    var headline: String {
+        category > 0 ? "Category \(category) \(typeLabel)" : typeLabel
+    }
+
+    /// NHC publishes sustained winds rounded to the nearest 5 mph.
+    var windMph: Int { Int((Double(windKt) * 1.15078 / 5).rounded()) * 5 }
+
+    /// ATCF-style short id used by Tropical Tidbits, e.g. "07E".
+    var atcfID: String { String(format: "%02d", stormNumber) + basin.atcfSuffix }
+
+    var movementText: String {
+        guard let dir = movementDir, let kt = movementKt else { return "Stationary" }
+        return "\(Storm.compass(dir)) (\(dir)°) at \(kt) kt"
+    }
+
+    static func compass(_ deg: Int) -> String {
+        let names = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+                     "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+        let i = Int((Double(deg).truncatingRemainder(dividingBy: 360) / 22.5).rounded()) % 16
+        return names[(i + 16) % 16]
+    }
+}
+
+struct ForecastPoint: Identifiable {
+    let id: Int
+    let bin: String
+    let coord: Coord
+    let tau: Int?              // forecast hour
+    let windKt: Int?
+    let gustKt: Int?
+    let pressureMb: Int?
+    let timeLabel: String?     // "11:00 AM Wed"
+    let validLabel: String?    // "2026-07-29 8:00 AM Wed HST"
+    let devLabel: String?      // H / S / D / M
+    let type: String?
+    let ssnum: Int?
+
+    var category: Int {
+        guard let w = windKt, devLabel == "H" || devLabel == "M" || type == "HU" || type == "MH" else { return 0 }
+        switch w {
+        case 137...: return 5
+        case 113...136: return 4
+        case 96...112: return 3
+        case 83...95: return 2
+        case 64...82: return 1
+        default: return 0
+        }
+    }
+}
+
+struct WatchWarning: Identifiable {
+    let id: Int
+    let bin: String
+    let kind: String           // tcww: TWA / TWR / HWA / HWR
+    let path: [Coord]
+
+    var label: String {
+        switch kind {
+        case "TWA": return "Tropical Storm Watch"
+        case "TWR": return "Tropical Storm Warning"
+        case "HWA": return "Hurricane Watch"
+        case "HWR": return "Hurricane Warning"
+        default: return kind
+        }
+    }
+}
+
+struct StormGeometry {
+    var forecastPoints: [ForecastPoint] = []
+    var forecastTrack: [[Coord]] = []
+    var cone: [[Coord]] = []
+    var pastTrack: [[Coord]] = []
+    var warnings: [WatchWarning] = []
+}
+
+/// A Tropical Weather Outlook area — the "disturbance" / invest layer.
+struct Disturbance: Identifiable {
+    let id: Int
+    let basin: Basin?
+    let coord: Coord
+    let prob2Day: Int?
+    let prob7Day: Int?
+    let risk2Day: String?
+    let risk7Day: String?
+    var area: [[Coord]] = []
+    let isSevenDayOnly: Bool
+
+    var riskLevel: String { (risk7Day ?? risk2Day ?? "Low").capitalized }
+    var title: String { "Disturbance \(id)" }
+}
+
+// MARK: - Feeds
+
+enum Feed {
+    static let currentStorms = URL(string: "https://www.nhc.noaa.gov/CurrentStorms.json")!
+
+    private static let gis =
+        "https://mapservices.weather.noaa.gov/tropical/rest/services/tropical/NHC_tropical_weather_summary/MapServer"
+
+    enum Layer: Int {
+        case twoDayPoint = 1, sevenDayPoint = 2, developmentRegion = 3
+        case forecastPoints = 5, forecastTrack = 6, cone = 7, watchWarning = 8
+        case pastTrack = 11
+    }
+
+    static func url(_ layer: Layer) -> URL {
+        URL(string: "\(gis)/\(layer.rawValue)/query?where=1%3D1&outFields=*&f=geojson&returnGeometry=true")!
+    }
+
+    // Text products (HTML pages wrapping a <pre> block).
+    static let epacOutlookText = URL(string: "https://www.nhc.noaa.gov/text/MIATWOEP.shtml")!
+    static let cpacOutlookText = URL(string: "https://www.nhc.noaa.gov/text/HFOTWOCP.shtml")!
+
+    // Graphics.
+    static let outlook2Day = URL(string: "https://www.nhc.noaa.gov/xgtwo/two_pac_2d0.png")!
+    static let outlook7Day = URL(string: "https://www.nhc.noaa.gov/xgtwo/two_pac_7d0.png")!
+    static let goesWestFullDisk =
+        URL(string: "https://cdn.star.nesdis.noaa.gov/GOES18/ABI/FD/GEOCOLOR/1808x1808.jpg")!
+    static let goesWestHawaii =
+        URL(string: "https://cdn.star.nesdis.noaa.gov/GOES18/ABI/SECTOR/hi/GEOCOLOR/1200x1200.jpg")!
+    static let goesWestAirMass =
+        URL(string: "https://cdn.star.nesdis.noaa.gov/GOES18/ABI/FD/AirMass/1808x1808.jpg")!
+
+    // Third-party sites that block hotlinking or require sign-in — shown as live web views.
+    static let tropicalTidbits = URL(string: "https://www.tropicaltidbits.com/storminfo/")!
+    static func tropicalTidbits(storm: Storm) -> URL {
+        URL(string: "https://www.tropicaltidbits.com/storminfo/#\(storm.atcfID)") ?? tropicalTidbits
+    }
+    static let tropicalTidbitsModels = URL(string: "https://www.tropicaltidbits.com/analysis/models/?model=gfs&region=epac")!
+    static let deepMindWeatherLab = URL(string: "https://deepmind.google.com/science/weatherlab")!
+    static let cphc = URL(string: "https://www.nhc.noaa.gov/?cpac")!
+}
+
+// MARK: - Networking
+
+enum FetchError: LocalizedError {
+    case http(Int, String)
+    var errorDescription: String? {
+        switch self {
+        case .http(let code, let host): return "\(host) returned HTTP \(code)"
+        }
+    }
+}
+
+struct Net {
+    static func data(_ url: URL) async throws -> Foundation.Data {
+        var req = URLRequest(url: url)
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        req.setValue("Hurakai/1.0 (macOS; Pacific cyclone tracker)", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await URLSession.shared.data(for: req)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw FetchError.http(http.statusCode, url.host ?? "server")
+        }
+        return data
+    }
+
+    static func decode<T: Decodable>(_ type: T.Type, from url: URL) async throws -> T {
+        try JSONDecoder().decode(type, from: await data(url))
+    }
+
+    static func text(_ url: URL) async throws -> String {
+        let raw = try await data(url)
+        return String(data: raw, encoding: .utf8) ?? String(decoding: raw, as: UTF8.self)
+    }
+}
+
+// MARK: - NHC CurrentStorms.json
+
+private struct CurrentStormsResponse: Decodable {
+    struct Product: Decodable {
+        let advNum: String?
+        let url: String?
+    }
+
+    struct Item: Decodable {
+        let id: String
+        let binNumber: String?
+        let name: String?
+        let classification: String?
+        let intensity: LooseInt?
+        let pressure: LooseInt?
+        let latitudeNumeric: Double?
+        let longitudeNumeric: Double?
+        let movementDir: LooseInt?
+        let movementSpeed: LooseInt?
+        let lastUpdate: String?
+        let publicAdvisory: Product?
+        let forecastAdvisory: Product?
+        let forecastDiscussion: Product?
+        let windSpeedProbabilities: Product?
+        let forecastGraphics: Product?
+    }
+
+    let activeStorms: [Item]?
+}
+
+private let isoParsers: [ISO8601DateFormatter] = {
+    let a = ISO8601DateFormatter()
+    a.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let b = ISO8601DateFormatter()
+    b.formatOptions = [.withInternetDateTime]
+    return [a, b]
+}()
+
+func parseISO(_ s: String?) -> Date? {
+    guard let s else { return nil }
+    for p in isoParsers { if let d = p.date(from: s) { return d } }
+    return nil
+}
+
+enum NHC {
+    static func activeStorms() async throws -> [Storm] {
+        let response = try await Net.decode(CurrentStormsResponse.self, from: Feed.currentStorms)
+        return (response.activeStorms ?? []).compactMap { item -> Storm? in
+            guard let lat = item.latitudeNumeric, let lon = item.longitudeNumeric,
+                  let basin = Basin(rawValue: String(item.id.prefix(2)).uppercased()) else { return nil }
+
+            var products: [Storm.Product] = []
+            func add(_ name: String, _ p: CurrentStormsResponse.Product?) {
+                if let s = p?.url, let u = URL(string: s) { products.append(.init(name: name, url: u)) }
+            }
+            add("Public Advisory", item.publicAdvisory)
+            add("Forecast Advisory", item.forecastAdvisory)
+            add("Forecast Discussion", item.forecastDiscussion)
+            add("Wind Speed Probabilities", item.windSpeedProbabilities)
+            add("Forecast Graphic", item.forecastGraphics)
+
+            let digits = item.id.dropFirst(2)
+            return Storm(
+                id: item.id,
+                bin: item.binNumber ?? item.id.uppercased(),
+                name: item.name ?? "Unnamed",
+                classification: (item.classification ?? "DB").uppercased(),
+                basin: basin,
+                stormNumber: Int(digits.prefix(2)) ?? 0,
+                year: Int(digits.dropFirst(2).prefix(4)) ?? Calendar.current.component(.year, from: Date()),
+                windKt: item.intensity?.value ?? 0,
+                gustKt: nil,
+                pressureMb: item.pressure?.value,
+                coord: Coord(latitude: lat, longitude: lon),
+                movementDir: item.movementDir?.value,
+                movementKt: item.movementSpeed?.value,
+                lastUpdate: parseISO(item.lastUpdate),
+                advisoryNumber: item.publicAdvisory?.advNum ?? item.forecastAdvisory?.advNum,
+                products: products
+            )
+        }
+    }
+
+    static func geometry() async throws -> [String: StormGeometry] {
+        async let pointsF = Net.decode(GJCollection.self, from: Feed.url(.forecastPoints))
+        async let trackF = Net.decode(GJCollection.self, from: Feed.url(.forecastTrack))
+        async let coneF = Net.decode(GJCollection.self, from: Feed.url(.cone))
+        async let pastF = Net.decode(GJCollection.self, from: Feed.url(.pastTrack))
+        async let warnF = Net.decode(GJCollection.self, from: Feed.url(.watchWarning))
+
+        let (points, track, cone, past, warn) = try await (pointsF, trackF, coneF, pastF, warnF)
+        var out: [String: StormGeometry] = [:]
+
+        func key(_ f: GJFeature) -> String? {
+            f.str("binnumber")?.uppercased() ?? f.str("stormnum").map { "#\($0)" }
+        }
+
+        for f in points.features ?? [] {
+            guard let bin = key(f), let c = f.point else { continue }
+            out[bin, default: .init()].forecastPoints.append(
+                ForecastPoint(id: f.int("objectid") ?? Int.random(in: 0..<1_000_000),
+                              bin: bin, coord: c,
+                              tau: f.int("tau"),
+                              windKt: f.int("maxwind"), gustKt: f.int("gust"),
+                              pressureMb: f.int("mslp"),
+                              timeLabel: f.str("datelbl"), validLabel: f.str("fldatelbl"),
+                              devLabel: f.str("dvlbl"), type: f.str("stormtype"),
+                              ssnum: f.int("ssnum")))
+        }
+        for f in track.features ?? [] {
+            guard let bin = key(f) else { continue }
+            out[bin, default: .init()].forecastTrack.append(contentsOf: f.paths.filter { $0.count > 1 })
+        }
+        for f in cone.features ?? [] {
+            guard let bin = key(f) else { continue }
+            out[bin, default: .init()].cone.append(contentsOf: f.paths.filter { $0.count > 2 })
+        }
+        for f in past.features ?? [] {
+            guard let bin = key(f) else { continue }
+            out[bin, default: .init()].pastTrack.append(contentsOf: f.paths.filter { $0.count > 1 })
+        }
+        for f in warn.features ?? [] {
+            guard let bin = key(f), let kind = f.str("tcww") else { continue }
+            for path in f.paths where path.count > 1 {
+                out[bin, default: .init()].warnings.append(
+                    WatchWarning(id: f.int("objectid") ?? 0, bin: bin, kind: kind, path: path))
+            }
+        }
+
+        for bin in out.keys {
+            out[bin]?.forecastPoints.sort { ($0.tau ?? 0) < ($1.tau ?? 0) }
+        }
+        return out
+    }
+
+    static func disturbances() async throws -> [Disturbance] {
+        async let twoF = Net.decode(GJCollection.self, from: Feed.url(.twoDayPoint))
+        async let sevenF = Net.decode(GJCollection.self, from: Feed.url(.sevenDayPoint))
+        async let regionF = Net.decode(GJCollection.self, from: Feed.url(.developmentRegion))
+        let (two, seven, region) = try await (twoF, sevenF, regionF)
+
+        let regions = (region.features ?? []).compactMap { f -> (String?, [[Coord]])? in
+            let rings = f.paths.filter { $0.count > 2 }
+            return rings.isEmpty ? nil : (f.str("basin"), rings)
+        }
+
+        func build(_ features: [GJFeature], sevenOnly: Bool) -> [Disturbance] {
+            features.compactMap { f in
+                guard let c = f.point else { return nil }
+                let basinCode = f.str("basin")
+                var d = Disturbance(
+                    id: f.int("objectid") ?? 0,
+                    basin: basinCode.flatMap { Basin(rawValue: $0.uppercased()) },
+                    coord: c,
+                    prob2Day: f.int("prob2day"),
+                    prob7Day: f.int("prob7day"),
+                    risk2Day: f.str("risk2day"),
+                    risk7Day: f.str("risk7day"),
+                    isSevenDayOnly: sevenOnly)
+                // ponytail: nearest matching-basin region is good enough; GTWO areas rarely overlap.
+                d.area = regions.first(where: { $0.0 == basinCode })?.1 ?? []
+                return d
+            }
+        }
+
+        var all = build(two.features ?? [], sevenOnly: false)
+        let existing = Set(all.map(\.id))
+        all += build(seven.features ?? [], sevenOnly: true).filter { !existing.contains($0.id) }
+        return all
+    }
+}
+
+// MARK: - Text products
+
+extension String {
+    /// Pulls the <pre> block out of an NHC product page and unescapes it.
+    var nhcProductText: String {
+        var body = self
+        if let open = range(of: "<pre", options: .caseInsensitive),
+           let gt = range(of: ">", range: open.upperBound..<endIndex),
+           let close = range(of: "</pre", options: .caseInsensitive, range: gt.upperBound..<endIndex) {
+            body = String(self[gt.upperBound..<close.lowerBound])
+        }
+        return body.strippingHTMLTags.unescapingHTMLEntities.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var strippingHTMLTags: String {
+        replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+    }
+
+    var unescapingHTMLEntities: String {
+        var s = self
+        for (k, v) in [("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""),
+                       ("&#39;", "'"), ("&apos;", "'"), ("&nbsp;", " ")] {
+            s = s.replacingOccurrences(of: k, with: v)
+        }
+        return s
+    }
+}
