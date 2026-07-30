@@ -121,6 +121,7 @@ struct DisturbanceRow: View {
 private enum InspectorTab: String, CaseIterable, Identifiable {
     case overview = "Overview"
     case forecast = "Forecast"
+    case models = "Models"
     case advisory = "Advisory"
     case discussion = "Discussion"
     var id: String { rawValue }
@@ -204,6 +205,7 @@ struct Inspector: View {
         switch tab {
         case .overview: StormOverview(storm: storm)
         case .forecast: ForecastList(storm: storm)
+        case .models: ModelGuidance(storm: storm)
         case .advisory:
             ProductText(url: storm.products.first { $0.name == "Public Advisory" }?.url,
                         missing: "No public advisory for this system.")
@@ -379,6 +381,126 @@ struct ForecastList: View {
                 }
             }
         }
+    }
+}
+
+/// ATCF model guidance — the same a-deck Tropical Tidbits plots, including Google
+/// DeepMind's GDMN ensemble mean.
+struct ModelGuidance: View {
+    @EnvironmentObject var tracker: Tracker
+    let storm: Storm
+
+    var body: some View {
+        let models = tracker.availableModels(for: storm)
+
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Toggle("Every technique", isOn: $tracker.showAllModels)
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: 10))
+                Spacer()
+                Button("All") {
+                    tracker.enabledModels.formUnion(models.map(\.tech))
+                }
+                .font(.system(size: 10))
+                Button("None") {
+                    tracker.enabledModels.subtract(models.map(\.tech))
+                }
+                .font(.system(size: 10))
+                Button {
+                    Task { await tracker.loadModels(for: storm, force: true) }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("Re-download the a-deck")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            Divider()
+
+            if tracker.loadingModels && models.isEmpty {
+                spacerText("Downloading model guidance…")
+            } else if models.isEmpty {
+                spacerText("No model guidance published for this system yet.")
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(models) { track in
+                            row(track)
+                            Divider()
+                        }
+                        Text("Source: NHC ATCF a-deck (`\(deckName)`). GDMN is the Google "
+                             + "DeepMind ensemble mean, contributed to NHC's guidance suite.")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                            .padding(12)
+                    }
+                }
+            }
+        }
+    }
+
+    private var deckName: String {
+        ATCF.url(for: storm)?.lastPathComponent ?? "a-deck"
+    }
+
+    private func spacerText(_ text: String) -> some View {
+        VStack {
+            Spacer()
+            Text(text).font(.caption).foregroundStyle(.secondary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func row(_ track: ModelTrack) -> some View {
+        let on = tracker.enabledModels.contains(track.tech)
+        return Button {
+            if on { tracker.enabledModels.remove(track.tech) }
+            else { tracker.enabledModels.insert(track.tech) }
+        } label: {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: on ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(on ? track.tint : .secondary)
+                    .font(.system(size: 12))
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(track.tint)
+                    .frame(width: 12, height: 3)
+                    .padding(.top, 6)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 5) {
+                        Text(track.tech)
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        if track.isDeepMind {
+                            Text("DeepMind")
+                                .font(.system(size: 8, weight: .heavy))
+                                .padding(.horizontal, 4).padding(.vertical, 1)
+                                .background(track.tint.opacity(0.25), in: Capsule())
+                        }
+                    }
+                    Text(track.name)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Text(detail(track))
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 12)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func detail(_ track: ModelTrack) -> String {
+        var parts = ["run \(track.cycleLabel)"]
+        if let last = track.finalPoint {
+            parts.append("to \(last.tau)h")
+            if let w = last.windKt { parts.append("\(w) kt") }
+        }
+        return parts.joined(separator: " · ")
     }
 }
 

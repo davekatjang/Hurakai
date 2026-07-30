@@ -1,6 +1,7 @@
 import Foundation
 import CoreLocation
 import MapKit
+import Compression
 
 typealias Coord = CLLocationCoordinate2D
 
@@ -540,6 +541,183 @@ enum NHC {
         let existing = Set(all.map(\.id))
         all += build(seven.features ?? [], sevenOnly: true).filter { !existing.contains($0.id) }
         return all
+    }
+}
+
+// MARK: - ATCF model guidance (a-decks)
+//
+// This is the same data Tropical Tidbits plots: every model's track and intensity
+// forecast for a storm, published openly by NHC. It also carries GDMN — the Google
+// DeepMind ensemble mean — so DeepMind guidance arrives here with no API key.
+
+struct ModelPoint: Identifiable {
+    let tau: Int               // forecast hour
+    let coord: Coord
+    let windKt: Int?
+    let pressureMb: Int?
+    var id: Int { tau }
+}
+
+struct ModelTrack: Identifiable {
+    let tech: String           // ATCF technique id, e.g. "GDMN"
+    let cycle: String          // initialisation cycle, YYYYMMDDHH
+    let points: [ModelPoint]
+
+    var id: String { tech }
+    var name: String { ATCF.names[tech] ?? tech }
+    var isDeepMind: Bool { tech.hasPrefix("GDM") }
+
+    var cycleLabel: String {
+        guard cycle.count == 10 else { return cycle }
+        let day = cycle.dropFirst(6).prefix(2)
+        let hour = cycle.suffix(2)
+        return "\(day)/\(hour)Z"
+    }
+
+    var finalPoint: ModelPoint? { points.last }
+}
+
+enum ATCFError: LocalizedError {
+    case notGzip, truncated
+    var errorDescription: String? {
+        switch self {
+        case .notGzip: return "Model guidance file was not gzip data"
+        case .truncated: return "Model guidance file was truncated"
+        }
+    }
+}
+
+extension Data {
+    /// RFC 1952 gzip. Apple's `.zlib` algorithm is raw DEFLATE (RFC 1951), so the gzip
+    /// wrapper has to come off first — header, optional fields, and the 8-byte trailer.
+    func gunzipped() throws -> Data {
+        let bytes = [UInt8](self)
+        guard bytes.count > 18, bytes[0] == 0x1f, bytes[1] == 0x8b else { throw ATCFError.notGzip }
+        let flags = bytes[3]
+        var i = 10
+        if flags & 0x04 != 0 {                                  // FEXTRA
+            guard i + 1 < bytes.count else { throw ATCFError.truncated }
+            i += 2 + (Int(bytes[i]) | Int(bytes[i + 1]) << 8)
+        }
+        if flags & 0x08 != 0 {                                  // FNAME
+            while i < bytes.count, bytes[i] != 0 { i += 1 }
+            i += 1
+        }
+        if flags & 0x10 != 0 {                                  // FCOMMENT
+            while i < bytes.count, bytes[i] != 0 { i += 1 }
+            i += 1
+        }
+        if flags & 0x02 != 0 { i += 2 }                         // FHCRC
+        guard i < bytes.count - 8 else { throw ATCFError.truncated }
+        let deflated = Data(bytes[i..<(bytes.count - 8)])
+        return try (deflated as NSData).decompressed(using: .zlib) as Data
+    }
+}
+
+enum ATCF {
+    /// Shown by default. Everything else (GEFS/ECMWF ensemble members, interpolated
+    /// variants) is spaghetti you opt into.
+    static let featured = ["OFCL", "GDMN", "AVNO", "HFSA", "HFSB", "HMON",
+                           "CMC", "UKX", "NVGM", "AEMN", "HCCA", "TVCN", "IVCN"]
+
+    static let names: [String: String] = [
+        "OFCL": "NHC Official Forecast",
+        "OFCI": "NHC Official (interpolated)",
+        "GDMN": "Google DeepMind (ensemble mean)",
+        "GDMI": "Google DeepMind (interpolated)",
+        "GDM2": "Google DeepMind (variant)",
+        "AVNO": "GFS",
+        "AVNI": "GFS (interpolated)",
+        "AEMN": "GEFS ensemble mean",
+        "AC00": "GEFS control",
+        "CMC": "Canadian GEM",
+        "CMCI": "Canadian GEM (interpolated)",
+        "UKX": "UK Met Office",
+        "UKXI": "UK Met Office (interpolated)",
+        "NVGM": "Navy NAVGEM",
+        "HWRF": "HWRF",
+        "HMON": "HMON",
+        "HFSA": "HAFS-A",
+        "HFSB": "HAFS-B",
+        "HCCA": "HFIP corrected consensus",
+        "TVCN": "Track variable consensus",
+        "IVCN": "Intensity variable consensus",
+        "DSHP": "SHIPS with decay",
+        "LGEM": "LGEM intensity",
+        "SHIP": "SHIPS intensity",
+        "CLP5": "CLIPER5 climatology",
+        "TCLP": "Climatology and persistence",
+        "XTRP": "Extrapolation",
+        "CARQ": "Analysis"
+    ]
+
+    /// Techniques that are bookkeeping rather than forecasts.
+    private static let skipped: Set<String> = ["CARQ", "WRNG"]
+
+    static func url(for storm: Storm) -> URL? {
+        let basin = storm.basin.rawValue.lowercased()
+        let file = String(format: "a%@%02d%d.dat.gz", basin, storm.stormNumber, storm.year)
+        return URL(string: "https://ftp.nhc.noaa.gov/atcf/aid_public/\(file)")
+    }
+
+    static func modelTracks(for storm: Storm) async throws -> [ModelTrack] {
+        guard let url = url(for: storm) else { return [] }
+        let text = String(decoding: try await Net.data(url).gunzipped(), as: UTF8.self)
+        return parse(text)
+    }
+
+    /// One a-deck line per technique, tau and wind-radius threshold. We keep each
+    /// technique's own most recent cycle — models and the official forecast run on
+    /// different clocks, so a single global "latest cycle" would silently drop OFCL.
+    static func parse(_ text: String) -> [ModelTrack] {
+        var latestCycle: [String: String] = [:]
+        var points: [String: [Int: ModelPoint]] = [:]
+
+        for line in text.split(separator: "\n") {
+            let f = line.split(separator: ",", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            guard f.count > 9 else { continue }
+
+            let cycle = f[2], tech = f[4]
+            guard !tech.isEmpty, !skipped.contains(tech), cycle.count == 10 else { continue }
+            guard let tau = Int(f[5]), tau >= 0,
+                  let lat = degrees(f[6], positive: "N"),
+                  let lon = degrees(f[7], positive: "E") else { continue }
+
+            if let known = latestCycle[tech] {
+                if cycle < known { continue }
+                if cycle > known { points[tech] = [:] }          // newer run supersedes
+            }
+            latestCycle[tech] = cycle
+
+            // Rows repeat per wind-radius threshold; the first one carries the position.
+            if points[tech]?[tau] != nil { continue }
+            let wind = Int(f[8]).flatMap { $0 > 0 ? $0 : nil }
+            let pressure = Int(f[9]).flatMap { $0 > 0 ? $0 : nil }
+            points[tech, default: [:]][tau] = ModelPoint(
+                tau: tau, coord: Coord(latitude: lat, longitude: lon),
+                windKt: wind, pressureMb: pressure)
+        }
+
+        return points.compactMap { tech, byTau -> ModelTrack? in
+            let ordered = byTau.values.sorted { $0.tau < $1.tau }
+            guard ordered.count >= 2, let cycle = latestCycle[tech] else { return nil }
+            return ModelTrack(tech: tech, cycle: cycle, points: ordered)
+        }
+        .sorted {
+            // Featured models first, in listed order, then everything else alphabetically.
+            let a = featured.firstIndex(of: $0.tech) ?? Int.max
+            let b = featured.firstIndex(of: $1.tech) ?? Int.max
+            return a == b ? $0.tech < $1.tech : a < b
+        }
+    }
+
+    /// ATCF stores coordinates in tenths of a degree with a hemisphere suffix: "255N", "1416W".
+    static func degrees(_ field: String, positive: Character) -> Double? {
+        guard let hemisphere = field.last, hemisphere.isLetter,
+              let tenths = Int(field.dropLast()) else { return nil }
+        let value = Double(tenths) / 10
+        return hemisphere == positive ? value : -value
     }
 }
 

@@ -14,6 +14,7 @@ struct LayerToggles {
     var forecastPoints = true
     var warnings = true
     var disturbances = true
+    var modelTracks = true
     var labels = true
 }
 
@@ -47,6 +48,12 @@ final class Tracker: ObservableObject {
     @Published var loading = false
     @Published var problems: [String] = []
     @Published var includeAtlantic = false
+
+    /// ATCF model guidance, keyed by storm id — loaded on demand, it's a 1 MB download.
+    @Published var modelTracks: [String: [ModelTrack]] = [:]
+    @Published var enabledModels: Set<String> = Set(ATCF.featured)
+    @Published var showAllModels = false
+    @Published var loadingModels = false
 
     var visibleStorms: [Storm] {
         storms
@@ -82,6 +89,28 @@ final class Tracker: ObservableObject {
         problems = issues
         updated = Date()
         loading = false
+    }
+
+    /// Techniques available for a storm, narrowed to the featured set unless asked otherwise.
+    func availableModels(for storm: Storm) -> [ModelTrack] {
+        let all = modelTracks[storm.id] ?? []
+        return showAllModels ? all : all.filter { ATCF.featured.contains($0.tech) }
+    }
+
+    func shownModels(for storm: Storm) -> [ModelTrack] {
+        availableModels(for: storm).filter { enabledModels.contains($0.tech) }
+    }
+
+    func loadModels(for storm: Storm, force: Bool = false) async {
+        if !force, modelTracks[storm.id] != nil { return }
+        loadingModels = true
+        do {
+            modelTracks[storm.id] = try await ATCF.modelTracks(for: storm)
+        } catch {
+            modelTracks[storm.id] = []
+            problems.append("ATCF model guidance — \(error.localizedDescription)")
+        }
+        loadingModels = false
     }
 
     func loadProduct(_ url: URL) async {
@@ -255,6 +284,7 @@ struct LayerMenu: View {
             Toggle("Past Track", isOn: $layers.pastTrack)
             Toggle("Watches & Warnings", isOn: $layers.warnings)
             Toggle("Disturbance Areas", isOn: $layers.disturbances)
+            Toggle("Model Guidance", isOn: $layers.modelTracks)
             Toggle("Labels", isOn: $layers.labels)
             Divider()
             Toggle("Include Atlantic Basin", isOn: $tracker.includeAtlantic)

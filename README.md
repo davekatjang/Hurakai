@@ -17,7 +17,11 @@ Eastern and Central Pacific by default; the Atlantic can be toggled on.
   between hybrid, satellite, and standard.
 - **Satellite & Outlook** — NHC/CPHC 2-day and 7-day graphical outlooks, and GOES-West
   GeoColor / Air Mass imagery (full disk and Hawai'i sector).
-- **Tropical Tidbits** — model guidance, embedded live and deep-linked to the selected storm.
+- **Models** (inspector tab) — full ATCF model guidance for the selected storm, drawn as a
+  spaghetti plot with labelled endpoints. Each technique can be toggled individually;
+  featured models are on by default and "Every technique" reveals the ensemble members.
+  Includes **GDMN, the Google DeepMind ensemble mean**.
+- **Tropical Tidbits** — the site itself, embedded live and deep-linked to the selected storm.
 - **DeepMind Weather Lab** — Google's experimental AI cyclone predictions.
 - **Outlook Text** — the Eastern and Central Pacific Tropical Weather Outlook discussions.
 
@@ -29,6 +33,7 @@ Data refreshes on launch, on ⌘R, and every 10 minutes.
 | --- | --- | --- |
 | NHC `CurrentStorms.json` | Active systems: position, intensity, pressure, motion, advisory links | JSON API |
 | NOAA Tropical GIS MapServer | Forecast points, forecast track, uncertainty cone, past track, watches/warnings, TWO disturbance areas | ArcGIS REST → GeoJSON |
+| NHC ATCF a-decks | Every model's track and intensity guidance, incl. Google DeepMind (`GDMN`) | Gzipped flat file |
 | NHC / CPHC text products | Public advisories, forecast discussions, Tropical Weather Outlooks | Product pages, `<pre>` extracted |
 | NHC Graphical TWO | 2-day and 7-day outlook graphics | PNG |
 | NOAA NESDIS/STAR | GOES-18 (GOES-West) GeoColor and Air Mass imagery | JPEG |
@@ -38,16 +43,43 @@ Data refreshes on launch, on ⌘R, and every 10 minutes.
 Both Central Pacific (CPHC) and Eastern Pacific (NHC) systems come through the same feeds —
 the GIS service and `CurrentStorms.json` cover the `EP`, `CP`, and `AL` basins.
 
+### Model guidance comes from the a-deck, not from scraping
+
+Tropical Tidbits plots the NHC **ATCF a-deck** — `aid_public/a{basin}{nn}{year}.dat.gz` — which
+NHC publishes openly. Hurakai reads the same file, so the model numbers behind those plots are
+available natively: every technique's latest run, its track, and its intensity forecast.
+
+Each technique keeps its own most recent initialisation cycle rather than a single global
+"latest" one, because models run at 00/06/12/18Z while the official forecast runs at
+03/09/15/21Z — a global cutoff would silently drop `OFCL`.
+
+**This is also where Google DeepMind's guidance lives.** `GDMN` is the DeepMind ensemble mean,
+contributed to NHC's guidance suite, and it arrives with no API key, no GCP project, and no
+sign-in. `GDMI` (interpolated) and `GDM2` appear alongside it.
+
 ### Two sources are embedded rather than parsed, on purpose
 
 - **Tropical Tidbits** returns HTTP 403 to direct image requests, including with a browser
   user agent. Scraping it would mean defeating a block its operator put there deliberately,
   so the app embeds the real site instead and deep-links to the selected storm's ATCF id.
+  The underlying model data is read from the a-deck, as above.
 - **Google DeepMind Weather Lab** has no public API and requires a Google sign-in. The app
   embeds it so you can sign in yourself; it does not handle credentials.
 
-If you have Google Cloud access, WeatherNext cyclone data is available through BigQuery and
-Earth Engine and could be pulled directly — that needs a GCP credential this app doesn't ask for.
+### WeatherNext via BigQuery / Earth Engine — not wired, and probably not needed
+
+Google's WeatherNext datasets are reachable through BigQuery and Earth Engine, but for
+*cyclone track and intensity guidance* they are the long way round to `GDMN`, which this app
+already reads for free. BigQuery would add value only if you want the **gridded** fields —
+global forecast grids of wind, pressure, temperature and precipitation, or per-member
+ensemble output — rather than cyclone tracks.
+
+That path is deliberately not implemented, because it cannot be built or tested without
+your own credentials. It needs a GCP project with billing, the WeatherNext datasets
+subscribed through Analytics Hub, and `gcloud`/`bq` installed (neither is on this machine).
+If you want the gridded fields, set up the project and say so — the natural shape is a
+small helper that queries BigQuery with your existing `gcloud` credentials and hands the
+app JSON, keeping OAuth out of the app entirely.
 
 ## Build
 

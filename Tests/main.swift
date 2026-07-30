@@ -106,6 +106,58 @@ check(Storm.compass(90) == "E", "compass E")
 check(Storm.compass(290) == "WNW", "compass WNW")
 check(Storm.compass(359) == "N", "compass wraps at 360")
 
+// MARK: ATCF a-deck (model guidance, including Google DeepMind's GDMN)
+
+check(ATCF.degrees("255N", positive: "N") == 25.5, "latitude tenths north")
+check(ATCF.degrees("112S", positive: "N") == -11.2, "latitude tenths south")
+check(ATCF.degrees("1416W", positive: "E") == -141.6, "longitude tenths west")
+check(ATCF.degrees("0653E", positive: "E") == 65.3, "longitude tenths east")
+check(ATCF.degrees("", positive: "N") == nil, "empty coordinate field")
+check(ATCF.degrees("NNW", positive: "N") == nil, "junk coordinate field")
+
+let deck = """
+EP, 07, 2026073012, 03, GDMN,   0, 200N, 1240W,  60, 0990, XX,  34, NEQ,  40,  30,  20,  30
+EP, 07, 2026073012, 03, GDMN,  12, 210N, 1250W,  55, 0995, XX,  34, NEQ,  40,  30,  20,  30
+EP, 07, 2026073018, 03, GDMN,   0, 205N, 1245W,  58, 0992, XX,  34, NEQ,  40,  30,  20,  30
+EP, 07, 2026073018, 03, GDMN,  12, 215N, 1256W,  50, 0998, XX,  34, NEQ,  40,  30,  20,  30
+EP, 07, 2026073018, 03, GDMN,  12, 215N, 1256W,  50, 0998, XX,  50, NEQ,  20,  10,  10,  10
+EP, 07, 2026073018, 03, GDMN,  24, 220N, 1265W,  45, 1000, XX,  34, NEQ,  30,  20,  10,  20
+EP, 07, 2026073015, 03, OFCL,   0, 204N, 1244W,  60, 0991, HU,  34, NEQ,  40,  30,  20,  30
+EP, 07, 2026073015, 03, OFCL,  12, 213N, 1254W,  55, 0995, HU,  34, NEQ,  40,  30,  20,  30
+EP, 07, 2026073018, 03, CARQ,   0, 205N, 1245W,  58, 0992, HU,  34, NEQ,  40,  30,  20,  30
+EP, 07, 2026073018, 03, AVNO,   0, 206N, 1246W,  57,    0, XX,  34, NEQ,  40,  30,  20,  30
+EP, 07, 2026073018, 03, AVNO,  12, 216N, 1257W,  52,    0, XX,  34, NEQ,  40,  30,  20,  30
+EP, 07, 2026073018, 03, ONLY,   6, 208N, 1248W,  55, 0993, XX,  34, NEQ,  40,  30,  20,  30
+"""
+let tracks = ATCF.parse(deck)
+let byTech = Dictionary(uniqueKeysWithValues: tracks.map { ($0.tech, $0) })
+
+check(!tracks.contains { $0.tech == "CARQ" }, "analysis rows are not a forecast model")
+check(!tracks.contains { $0.tech == "ONLY" }, "a technique with one point is dropped")
+check(byTech["GDMN"] != nil, "DeepMind GDMN parsed")
+check(byTech["GDMN"]?.isDeepMind == true, "GDMN flagged as DeepMind")
+check(byTech["GDMN"]?.name == "Google DeepMind (ensemble mean)", "GDMN named")
+check(byTech["GDMN"]?.cycle == "2026073018", "newest run wins")
+check(byTech["GDMN"]?.points.count == 3, "superseded run's points are discarded, radii rows deduped")
+check(byTech["GDMN"]?.points.map(\.tau) == [0, 12, 24], "points ordered by forecast hour")
+check(byTech["GDMN"]?.points[1].coord.latitude == 21.5, "point latitude from newest run")
+check(byTech["GDMN"]?.points[1].coord.longitude == -125.6, "point longitude from newest run")
+check(byTech["GDMN"]?.finalPoint?.windKt == 45, "final intensity")
+check(byTech["GDMN"]?.cycleLabel == "30/18Z", "cycle label")
+check(byTech["OFCL"]?.cycle == "2026073015", "each technique keeps its own latest cycle")
+check(byTech["AVNO"]?.points.first?.pressureMb == nil, "zero pressure means missing, not 0 mb")
+check(tracks.first?.tech == "OFCL", "featured models sort first, official first of all")
+
+// gzip: the a-deck is only served gzipped, and Apple's zlib is raw DEFLATE
+let gz = Data(base64Encoded:
+    "H4sIAGvca2oAA3MN0FEwMNdRMDIwMjMwNzYwtADyjXUU3F18/XQUFAyNgFKGBkCmoZGpQThQxNQUqMDSEkhGRAC5xiY6Cn6ugVwAvWi93kgAAAA=")!
+let unzipped = String(decoding: try! gz.gunzipped(), as: UTF8.self)
+check(unzipped.contains("GDMN"), "gunzip round-trips an a-deck line")
+check(ATCF.parse(unzipped).isEmpty, "a single-point deck yields no track")
+var notGzip = false
+do { _ = try Data("not gzip at all, definitely not".utf8).gunzipped() } catch { notGzip = true }
+check(notGzip, "non-gzip input throws instead of returning garbage")
+
 // MARK: Product text extraction
 
 let page = """

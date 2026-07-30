@@ -32,6 +32,27 @@ enum Palette {
         }
     }
 
+    /// Model guidance colors. The named ones match how forecasters expect to see them;
+    /// anything else gets a stable hue derived from its technique id.
+    static func model(_ tech: String) -> Color {
+        switch tech {
+        case "OFCL", "OFCI": return .white
+        case "GDMN", "GDMI", "GDM2": return Color(red: 0.80, green: 0.42, blue: 1.00)
+        case "AVNO", "AVNI": return Color(red: 1.00, green: 0.34, blue: 0.34)
+        case "AEMN", "AC00": return Color(red: 1.00, green: 0.62, blue: 0.40)
+        case "CMC", "CMCI", "CMC2": return Color(red: 0.38, green: 1.00, blue: 0.52)
+        case "UKX", "UKXI", "UKX2": return Color(red: 0.40, green: 0.70, blue: 1.00)
+        case "NVGM", "NVGI", "NVG2": return Color(red: 0.62, green: 0.82, blue: 0.92)
+        case "HFSA", "HFAI": return Color(red: 1.00, green: 0.86, blue: 0.30)
+        case "HFSB", "HFBI": return Color(red: 0.94, green: 0.68, blue: 0.18)
+        case "HMON", "HMNI", "HWRF", "HWFI": return Color(red: 0.92, green: 0.50, blue: 0.72)
+        case "HCCA", "TVCN", "IVCN", "RVCN": return Color(red: 0.45, green: 1.00, blue: 0.90)
+        default:
+            let hue = Double(abs(tech.hashValue) % 360) / 360
+            return Color(hue: hue, saturation: 0.55, brightness: 0.95)
+        }
+    }
+
     static func warning(_ kind: String) -> Color {
         switch kind {
         case "HWR": return Color(red: 0.85, green: 0.10, blue: 0.10)
@@ -50,6 +71,10 @@ extension Storm {
         if classification.hasPrefix("TD") || classification == "STD" { return Palette.depression }
         return Palette.storm
     }
+}
+
+extension ModelTrack {
+    var tint: Color { Palette.model(tech) }
 }
 
 extension ForecastPoint {
@@ -87,6 +112,13 @@ private struct MapPath: Identifiable {
     let tint: Color
 }
 
+private struct ModelEndpoint: Identifiable {
+    let tech: String
+    let coord: Coord
+    let tint: Color
+    var id: String { tech }
+}
+
 struct StormMap: View {
     @EnvironmentObject var tracker: Tracker
     @Binding var selection: Selection?
@@ -114,6 +146,9 @@ struct StormMap: View {
         .overlay(alignment: .bottomLeading) { Legend() }
         .overlay(alignment: .topTrailing) { resetButton }
         .onChange(of: selection) { _, new in focus(on: new) }
+        .task(id: selectedStorm?.id) {
+            if let storm = selectedStorm { await tracker.loadModels(for: storm) }
+        }
     }
 
     // MARK: overlays
@@ -126,6 +161,25 @@ struct StormMap: View {
                     .foregroundStyle(ring.tint.opacity(0.16))
                     .stroke(ring.tint.opacity(0.75), lineWidth: 1.2)
             }
+        }
+        ForEach(modelPaths) { path in
+            MapPolyline(coordinates: path.coords)
+                .stroke(path.tint.opacity(0.9),
+                        style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+        }
+        if layers.labels {
+            ForEach(modelEndpoints) { endpoint in
+                Annotation("", coordinate: endpoint.coord, anchor: .center) {
+                    Text(endpoint.tech)
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .fixedSize()
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 1)
+                        .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 3))
+                        .foregroundStyle(endpoint.tint)
+                }
+            }
+            .annotationTitles(.hidden)
         }
         if layers.pastTrack {
             ForEach(pastTracks) { path in
@@ -246,6 +300,32 @@ struct StormMap: View {
         return show.flatMap { tracker.geometry(for: $0).forecastPoints.filter { ($0.tau ?? 0) > 0 } }
     }
 
+    /// Spaghetti is only legible one storm at a time, so model guidance follows the selection.
+    private var selectedStorm: Storm? {
+        guard case .storm(let id) = selection else { return nil }
+        return tracker.storm(id: id)
+    }
+
+    private var shownModels: [ModelTrack] {
+        guard layers.modelTracks, let storm = selectedStorm else { return [] }
+        return tracker.shownModels(for: storm)
+    }
+
+    private var modelPaths: [MapPath] {
+        shownModels.compactMap { track in
+            let coords = track.points.map(\.coord)
+            guard coords.count > 1 else { return nil }
+            return MapPath(id: "model-\(track.tech)", coords: coords, tint: track.tint)
+        }
+    }
+
+    private var modelEndpoints: [ModelEndpoint] {
+        shownModels.compactMap { track in
+            guard let last = track.finalPoint else { return nil }
+            return ModelEndpoint(tech: track.tech, coord: last.coord, tint: track.tint)
+        }
+    }
+
     private var disturbanceAreas: [MapPath] {
         tracker.visibleDisturbances.flatMap { d in
             d.area.enumerated().map {
@@ -308,35 +388,39 @@ struct StormPin: View {
     private var size: CGFloat { selected ? 46 : 34 }
 
     var body: some View {
-        VStack(spacing: 3) {
-            ZStack {
-                Circle().fill(storm.tint.opacity(0.25))
-                Circle().strokeBorder(storm.tint, lineWidth: selected ? 2.5 : 1.5)
-                Image(systemName: storm.isHurricaneType ? "hurricane" : "tropicalstorm")
-                    .font(.system(size: size * 0.6, weight: .bold))
-                    .foregroundStyle(storm.tint)
-                    .rotationEffect(.degrees(spin ? -360 : 0))
-                    .animation(.linear(duration: storm.isHurricaneType ? 7 : 14)
-                        .repeatForever(autoreverses: false), value: spin)
-            }
-            .frame(width: size, height: size)
-            .shadow(color: .black.opacity(0.7), radius: 3)
-
-            if showLabel {
-                VStack(spacing: 0) {
-                    Text(storm.name.uppercased())
-                        .font(.system(size: 10, weight: .heavy, design: .rounded))
-                    Text("\(storm.windKt) kt" + (storm.category > 0 ? " · C\(storm.category)" : ""))
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundStyle(storm.tint)
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 5))
-                .foregroundStyle(.white)
-            }
+        ZStack {
+            Circle().fill(storm.tint.opacity(0.25))
+            Circle().strokeBorder(storm.tint, lineWidth: selected ? 2.5 : 1.5)
+            Image(systemName: storm.isHurricaneType ? "hurricane" : "tropicalstorm")
+                .font(.system(size: size * 0.6, weight: .bold))
+                .foregroundStyle(storm.tint)
+                .rotationEffect(.degrees(spin ? -360 : 0))
+                .animation(.linear(duration: storm.isHurricaneType ? 7 : 14)
+                    .repeatForever(autoreverses: false), value: spin)
+        }
+        .frame(width: size, height: size)
+        .shadow(color: .black.opacity(0.7), radius: 3)
+        // ponytail: the label hangs off an overlay, not a VStack sibling. An annotation is
+        // centered on its own frame, so a stacked label would shove the icon off the
+        // storm's real position — which is exactly where the track line starts.
+        .overlay(alignment: .top) {
+            if showLabel { label.fixedSize().offset(y: size + 3) }
         }
         .onAppear { spin = true }
+    }
+
+    private var label: some View {
+        VStack(spacing: 0) {
+            Text(storm.name.uppercased())
+                .font(.system(size: 10, weight: .heavy, design: .rounded))
+            Text("\(storm.windKt) kt" + (storm.category > 0 ? " · C\(storm.category)" : ""))
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundStyle(storm.tint)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 5))
+        .foregroundStyle(.white)
     }
 }
 
@@ -345,23 +429,24 @@ struct ForecastPin: View {
     let showLabel: Bool
 
     var body: some View {
-        VStack(spacing: 2) {
-            ZStack {
-                Circle().fill(point.tint)
-                Circle().strokeBorder(.black.opacity(0.65), lineWidth: 1)
-                Text(point.devLabel ?? "")
-                    .font(.system(size: 9, weight: .black))
-                    .foregroundStyle(.black.opacity(0.8))
-            }
-            .frame(width: 16, height: 16)
-            .shadow(color: .black.opacity(0.5), radius: 2)
-
+        ZStack {
+            Circle().fill(point.tint)
+            Circle().strokeBorder(.black.opacity(0.65), lineWidth: 1)
+            Text(point.devLabel ?? "")
+                .font(.system(size: 9, weight: .black))
+                .foregroundStyle(.black.opacity(0.8))
+        }
+        .frame(width: 16, height: 16)
+        .shadow(color: .black.opacity(0.5), radius: 2)
+        .overlay(alignment: .top) {
             if showLabel, let tau = point.tau {
                 Text("\(tau)h")
                     .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                    .fixedSize()
                     .padding(.horizontal, 3)
                     .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 3))
                     .foregroundStyle(.white)
+                    .offset(y: 18)
             }
         }
         .help(pointHelp)
@@ -384,24 +469,25 @@ struct DisturbancePin: View {
     private var tint: Color { Palette.risk(disturbance.risk7Day ?? disturbance.risk2Day) }
 
     var body: some View {
-        VStack(spacing: 2) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 5).fill(tint.opacity(0.9))
-                RoundedRectangle(cornerRadius: 5)
-                    .strokeBorder(selected ? .white : .black.opacity(0.6), lineWidth: selected ? 2 : 1)
-                Text("X")
-                    .font(.system(size: 13, weight: .black))
-                    .foregroundStyle(.black.opacity(0.85))
-            }
-            .frame(width: 22, height: 22)
-            .shadow(color: .black.opacity(0.6), radius: 3)
-
+        ZStack {
+            RoundedRectangle(cornerRadius: 5).fill(tint.opacity(0.9))
+            RoundedRectangle(cornerRadius: 5)
+                .strokeBorder(selected ? .white : .black.opacity(0.6), lineWidth: selected ? 2 : 1)
+            Text("X")
+                .font(.system(size: 13, weight: .black))
+                .foregroundStyle(.black.opacity(0.85))
+        }
+        .frame(width: 22, height: 22)
+        .shadow(color: .black.opacity(0.6), radius: 3)
+        .overlay(alignment: .top) {
             Text(probabilityLabel)
                 .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .fixedSize()
                 .padding(.horizontal, 4)
                 .padding(.vertical, 1)
                 .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
                 .foregroundStyle(.white)
+                .offset(y: 25)
         }
     }
 
