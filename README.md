@@ -21,6 +21,11 @@ Eastern and Central Pacific by default; the Atlantic can be toggled on.
   spaghetti plot with labelled endpoints. Each technique can be toggled individually;
   featured models are on by default and "Every technique" reveals the ensemble members.
   Includes **GDMN, the Google DeepMind ensemble mean**.
+- **Intensity Models** — the intensity counterpart to the track spaghetti: every technique's
+  wind forecast against forecast hour, with Saffir-Simpson thresholds marked and the official
+  forecast drawn heavier. Shares the same model toggles as the map, so turning a technique off
+  in one place turns it off in both. Includes the intensity-only aids (SHIP, LGEM, DSHP, IVCN)
+  that have no track to plot.
 - **Tropical Tidbits** — the site itself, embedded live and deep-linked to the selected storm.
 - **DeepMind Weather Lab** — Google's experimental AI cyclone predictions.
 - **Outlook Text** — the Eastern and Central Pacific Tropical Weather Outlook discussions.
@@ -52,6 +57,13 @@ available natively: every technique's latest run, its track, and its intensity f
 Each technique keeps its own most recent initialisation cycle rather than a single global
 "latest" one, because models run at 00/06/12/18Z while the official forecast runs at
 03/09/15/21Z — a global cutoff would silently drop `OFCL`.
+
+Two conventions in that file are easy to get wrong. Rows repeat per wind-radius threshold
+(34/50/64 kt), so positions have to be de-duplicated by forecast hour. And intensity-only
+aids — `SHIP`, `LGEM`, `DSHP`, `IVCN` — publish `0N`/`0W` rather than omitting the position,
+so taking it literally draws a track from the storm to 0°N 0°E. Those points carry intensity
+but no position, and the app treats them that way: absent from the map, present in the
+intensity chart.
 
 **This is also where Google DeepMind's guidance lives.** `GDMN` is the DeepMind ensemble mean,
 contributed to NHC's guidance suite, and it arrives with no API key, no GCP project, and no

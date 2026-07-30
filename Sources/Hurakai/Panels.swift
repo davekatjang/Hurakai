@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import Charts
 
 // MARK: - Sidebar
 
@@ -531,6 +532,170 @@ struct ProductText: View {
                 .frame(maxWidth: .infinity)
             }
         }
+    }
+}
+
+// MARK: - Intensity guidance
+
+private struct IntensitySample: Identifiable {
+    let tech: String
+    let tau: Int
+    let windKt: Int
+    var id: String { "\(tech)-\(tau)" }
+}
+
+/// The intensity counterpart to the map's track spaghetti — same a-deck, same model
+/// toggles, wind against forecast hour instead of position.
+struct IntensityPane: View {
+    @EnvironmentObject var tracker: Tracker
+    @Binding var selection: Selection?
+
+    private var storm: Storm? {
+        guard case .storm(let id) = selection else { return nil }
+        return tracker.storm(id: id)
+    }
+
+    var body: some View {
+        if let storm {
+            HStack(spacing: 0) {
+                IntensityChart(storm: storm)
+                Divider()
+                ModelGuidance(storm: storm).frame(width: 330)
+            }
+            .task(id: storm.id) { await tracker.loadModels(for: storm) }
+        } else {
+            picker
+        }
+    }
+
+    private var picker: some View {
+        VStack(spacing: 10) {
+            Spacer()
+            Image(systemName: "chart.line.uptrend.xyaxis")
+                .font(.system(size: 30))
+                .foregroundStyle(.tertiary)
+            Text("Select a system to see its intensity guidance")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            ForEach(tracker.visibleStorms) { storm in
+                Button(storm.name) { selection = .storm(storm.id) }
+            }
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+struct IntensityChart: View {
+    @EnvironmentObject var tracker: Tracker
+    let storm: Storm
+
+    private var tracks: [ModelTrack] {
+        tracker.shownModels(for: storm).filter(\.hasIntensity)
+    }
+
+    private var samples: [IntensitySample] {
+        tracks.flatMap { track in
+            track.intensityPoints.compactMap { point in
+                point.windKt.map { IntensitySample(tech: track.tech, tau: point.tau, windKt: $0) }
+            }
+        }
+    }
+
+    private var techs: [String] { tracks.map(\.tech) }
+
+    private var windCeiling: Int {
+        let peak = samples.map(\.windKt).max() ?? 80
+        return max(((peak + 20) / 10) * 10, 80)
+    }
+
+    private var hourCeiling: Int {
+        max(samples.map(\.tau).max() ?? 120, 24)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Divider()
+            if samples.isEmpty {
+                VStack {
+                    Spacer()
+                    Text(tracker.loadingModels
+                         ? "Downloading model guidance…"
+                         : "No intensity guidance published for this system yet.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity)
+            } else {
+                chart.padding(16)
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("\(storm.name.uppercased()) — MODEL INTENSITY GUIDANCE")
+                .font(.system(size: 12, weight: .heavy, design: .rounded))
+            Text("\(tracks.count) techniques · dashed lines are Saffir-Simpson thresholds")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            Spacer()
+            if tracker.loadingModels { ProgressView().controlSize(.small) }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+    }
+
+    private var chart: some View {
+        Chart {
+            ForEach(Palette.intensityThresholds, id: \.kt) { threshold in
+                RuleMark(y: .value("Threshold", threshold.kt))
+                    .foregroundStyle(threshold.color.opacity(0.45))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                    .annotation(position: .top, alignment: .trailing) {
+                        Text(threshold.label)
+                            .font(.system(size: 8, weight: .bold, design: .rounded))
+                            .foregroundStyle(threshold.color.opacity(0.9))
+                    }
+            }
+            ForEach(samples) { sample in
+                LineMark(
+                    x: .value("Forecast hour", sample.tau),
+                    y: .value("Wind", sample.windKt),
+                    series: .value("Model", sample.tech)
+                )
+                .foregroundStyle(by: .value("Model", sample.tech))
+                .lineStyle(StrokeStyle(lineWidth: sample.tech == "OFCL" ? 3.5 : 1.7,
+                                       lineCap: .round, lineJoin: .round))
+                .interpolationMethod(.monotone)
+            }
+        }
+        .chartForegroundStyleScale(domain: techs, range: techs.map { Palette.model($0) })
+        .chartYScale(domain: 0...windCeiling)
+        .chartXScale(domain: 0...hourCeiling)
+        .chartXAxis {
+            AxisMarks(values: .stride(by: 24)) { value in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.25))
+                AxisTick()
+                AxisValueLabel {
+                    if let hour = value.as(Int.self) { Text("\(hour)h").font(.system(size: 10)) }
+                }
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .leading, values: [0, 34, 64, 83, 96, 113, 137]) { value in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
+                AxisTick()
+                AxisValueLabel {
+                    if let kt = value.as(Int.self) { Text("\(kt)").font(.system(size: 10)) }
+                }
+            }
+        }
+        .chartXAxisLabel("Forecast hour", alignment: .center)
+        .chartYAxisLabel("Max sustained wind (kt)", position: .leading)
+        .chartLegend(position: .bottom, alignment: .leading, spacing: 10)
     }
 }
 

@@ -128,6 +128,9 @@ EP, 07, 2026073018, 03, CARQ,   0, 205N, 1245W,  58, 0992, HU,  34, NEQ,  40,  3
 EP, 07, 2026073018, 03, AVNO,   0, 206N, 1246W,  57,    0, XX,  34, NEQ,  40,  30,  20,  30
 EP, 07, 2026073018, 03, AVNO,  12, 216N, 1257W,  52,    0, XX,  34, NEQ,  40,  30,  20,  30
 EP, 07, 2026073018, 03, ONLY,   6, 208N, 1248W,  55, 0993, XX,  34, NEQ,  40,  30,  20,  30
+EP, 07, 2026073018, 03, IVCN,  12,   0N,    0W,  50,    0,   ,   0,    ,   0,   0,   0,   0
+EP, 07, 2026073018, 03, IVCN,  24,   0N,    0W,  45,    0,   ,   0,    ,   0,   0,   0,   0
+EP, 07, 2026073018, 03, IVCN,  36,   0N,    0W,   0,    0,   ,   0,    ,   0,   0,   0,   0
 """
 let tracks = ATCF.parse(deck)
 let byTech = Dictionary(uniqueKeysWithValues: tracks.map { ($0.tech, $0) })
@@ -140,13 +143,25 @@ check(byTech["GDMN"]?.name == "Google DeepMind (ensemble mean)", "GDMN named")
 check(byTech["GDMN"]?.cycle == "2026073018", "newest run wins")
 check(byTech["GDMN"]?.points.count == 3, "superseded run's points are discarded, radii rows deduped")
 check(byTech["GDMN"]?.points.map(\.tau) == [0, 12, 24], "points ordered by forecast hour")
-check(byTech["GDMN"]?.points[1].coord.latitude == 21.5, "point latitude from newest run")
-check(byTech["GDMN"]?.points[1].coord.longitude == -125.6, "point longitude from newest run")
+check(byTech["GDMN"]?.points[1].coord?.latitude == 21.5, "point latitude from newest run")
+check(byTech["GDMN"]?.points[1].coord?.longitude == -125.6, "point longitude from newest run")
 check(byTech["GDMN"]?.finalPoint?.windKt == 45, "final intensity")
 check(byTech["GDMN"]?.cycleLabel == "30/18Z", "cycle label")
 check(byTech["OFCL"]?.cycle == "2026073015", "each technique keeps its own latest cycle")
 check(byTech["AVNO"]?.points.first?.pressureMb == nil, "zero pressure means missing, not 0 mb")
 check(tracks.first?.tech == "OFCL", "featured models sort first, official first of all")
+
+// Intensity-only aids publish 0N/0W. Taking that literally drew tracks to 0°N 0°E.
+check(byTech["IVCN"] != nil, "intensity-only aid is still parsed")
+check(byTech["IVCN"]?.points.allSatisfy { $0.coord == nil } == true, "0N/0W means no position")
+check(byTech["IVCN"]?.path.isEmpty == true, "intensity-only aid contributes no track path")
+check(byTech["IVCN"]?.hasTrack == false, "intensity-only aid is never drawn on the map")
+check(byTech["IVCN"]?.lastPositioned == nil, "intensity-only aid has no label anchor")
+check(byTech["IVCN"]?.hasIntensity == true, "intensity-only aid does carry intensity")
+check(byTech["IVCN"]?.intensityPoints.map(\.tau) == [12, 24], "zero-wind row is not an intensity point")
+check(byTech["GDMN"]?.hasTrack == true, "a real model still has a track")
+check(byTech["GDMN"]?.path.count == 3, "track path keeps every positioned point")
+check(byTech["GDMN"]?.lastPositioned?.tau == 24, "label anchors on the last positioned point")
 
 // gzip: the a-deck is only served gzipped, and Apple's zlib is raw DEFLATE
 let gz = Data(base64Encoded:

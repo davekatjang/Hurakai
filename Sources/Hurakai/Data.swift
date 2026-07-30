@@ -552,7 +552,8 @@ enum NHC {
 
 struct ModelPoint: Identifiable {
     let tau: Int               // forecast hour
-    let coord: Coord
+    /// Intensity-only aids (SHIP, LGEM, DSHP, IVCN) publish 0N/0W — no position at all.
+    let coord: Coord?
     let windKt: Int?
     let pressureMb: Int?
     var id: Int { tau }
@@ -566,6 +567,16 @@ struct ModelTrack: Identifiable {
     var id: String { tech }
     var name: String { ATCF.names[tech] ?? tech }
     var isDeepMind: Bool { tech.hasPrefix("GDM") }
+
+    /// Positions only. Intensity-only aids contribute nothing here.
+    var path: [Coord] { points.compactMap(\.coord) }
+    var hasTrack: Bool { path.count > 1 }
+
+    var intensityPoints: [ModelPoint] { points.filter { $0.windKt != nil } }
+    var hasIntensity: Bool { intensityPoints.count > 1 }
+
+    /// Last point that actually has a position — where the track label goes.
+    var lastPositioned: ModelPoint? { points.last { $0.coord != nil } }
 
     var cycleLabel: String {
         guard cycle.count == 10 else { return cycle }
@@ -618,7 +629,8 @@ enum ATCF {
     /// Shown by default. Everything else (GEFS/ECMWF ensemble members, interpolated
     /// variants) is spaghetti you opt into.
     static let featured = ["OFCL", "GDMN", "AVNO", "HFSA", "HFSB", "HMON",
-                           "CMC", "UKX", "NVGM", "AEMN", "HCCA", "TVCN", "IVCN"]
+                           "CMC", "UKX", "NVGM", "AEMN", "HCCA", "TVCN", "IVCN",
+                           "DSHP", "LGEM", "SHIP"]
 
     static let names: [String: String] = [
         "OFCL": "NHC Official Forecast",
@@ -680,9 +692,7 @@ enum ATCF {
 
             let cycle = f[2], tech = f[4]
             guard !tech.isEmpty, !skipped.contains(tech), cycle.count == 10 else { continue }
-            guard let tau = Int(f[5]), tau >= 0,
-                  let lat = degrees(f[6], positive: "N"),
-                  let lon = degrees(f[7], positive: "E") else { continue }
+            guard let tau = Int(f[5]), tau >= 0 else { continue }
 
             if let known = latestCycle[tech] {
                 if cycle < known { continue }
@@ -692,11 +702,21 @@ enum ATCF {
 
             // Rows repeat per wind-radius threshold; the first one carries the position.
             if points[tech]?[tau] != nil { continue }
+
+            // 0N/0W is ATCF for "no position" — SHIP, LGEM, DSHP and IVCN forecast
+            // intensity only. Taking it literally would draw tracks to the Gulf of Guinea.
+            let lat = degrees(f[6], positive: "N")
+            let lon = degrees(f[7], positive: "E")
+            var coord: Coord?
+            if let lat, let lon, !(lat == 0 && lon == 0) {
+                coord = Coord(latitude: lat, longitude: lon)
+            }
             let wind = Int(f[8]).flatMap { $0 > 0 ? $0 : nil }
             let pressure = Int(f[9]).flatMap { $0 > 0 ? $0 : nil }
+            guard coord != nil || wind != nil else { continue }
+
             points[tech, default: [:]][tau] = ModelPoint(
-                tau: tau, coord: Coord(latitude: lat, longitude: lon),
-                windKt: wind, pressureMb: pressure)
+                tau: tau, coord: coord, windKt: wind, pressureMb: pressure)
         }
 
         return points.compactMap { tech, byTau -> ModelTrack? in

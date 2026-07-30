@@ -20,6 +20,7 @@ struct LayerToggles {
 
 enum Pane: String, CaseIterable, Identifiable {
     case map = "Map"
+    case intensity = "Intensity Models"
     case imagery = "Satellite & Outlook"
     case models = "Tropical Tidbits"
     case weatherLab = "DeepMind Weather Lab"
@@ -30,6 +31,7 @@ enum Pane: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .map: return "map"
+        case .intensity: return "chart.line.uptrend.xyaxis"
         case .imagery: return "globe.americas"
         case .models: return "chart.xyaxis.line"
         case .weatherLab: return "sparkles"
@@ -202,7 +204,9 @@ struct ContentView: View {
             }
         }
         .onChange(of: selection) { _, new in
-            if new != nil, pane != .map, pane != .models { pane = .map }
+            // Panes that already react to the selection shouldn't be yanked away from.
+            let selectionAware: Set<Pane> = [.map, .intensity, .models]
+            if new != nil, !selectionAware.contains(pane) { pane = .map }
         }
     }
 
@@ -218,6 +222,8 @@ struct ContentView: View {
                         .frame(width: 400)
                 }
             }
+        case .intensity:
+            IntensityPane(selection: $selection)
         case .imagery:
             ImageryPane()
         case .models:

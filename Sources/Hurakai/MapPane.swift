@@ -24,6 +24,12 @@ enum Palette {
         }
     }
 
+    /// Saffir-Simpson boundaries, for the intensity chart's reference lines.
+    static let intensityThresholds: [(kt: Int, label: String, color: Color)] = [
+        (34, "TS", storm), (64, "CAT 1", cat1), (83, "CAT 2", cat2),
+        (96, "CAT 3", cat3), (113, "CAT 4", cat4), (137, "CAT 5", cat5)
+    ]
+
     static func risk(_ level: String?) -> Color {
         switch level?.lowercased() {
         case "high": return Color(red: 1.0, green: 0.28, blue: 0.28)
@@ -313,16 +319,15 @@ struct StormMap: View {
 
     private var modelPaths: [MapPath] {
         shownModels.compactMap { track in
-            let coords = track.points.map(\.coord)
-            guard coords.count > 1 else { return nil }
-            return MapPath(id: "model-\(track.tech)", coords: coords, tint: track.tint)
+            guard track.hasTrack else { return nil }
+            return MapPath(id: "model-\(track.tech)", coords: track.path, tint: track.tint)
         }
     }
 
     private var modelEndpoints: [ModelEndpoint] {
         shownModels.compactMap { track in
-            guard let last = track.finalPoint else { return nil }
-            return ModelEndpoint(tech: track.tech, coord: last.coord, tint: track.tint)
+            guard track.hasTrack, let last = track.lastPositioned?.coord else { return nil }
+            return ModelEndpoint(tech: track.tech, coord: last, tint: track.tint)
         }
     }
 
