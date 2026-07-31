@@ -22,7 +22,6 @@ enum Pane: String, CaseIterable, Identifiable {
     case map = "Map"
     case intensity = "Intensity Models"
     case imagery = "Satellite & Outlook"
-    case models = "Tropical Tidbits"
     case weatherLab = "DeepMind Weather Lab"
     case text = "Outlook Text"
 
@@ -33,7 +32,6 @@ enum Pane: String, CaseIterable, Identifiable {
         case .map: return "map"
         case .intensity: return "chart.line.uptrend.xyaxis"
         case .imagery: return "globe.americas"
-        case .models: return "chart.xyaxis.line"
         case .weatherLab: return "sparkles"
         case .text: return "doc.plaintext"
         }
@@ -63,9 +61,12 @@ final class Tracker: ObservableObject {
             .sorted { ($0.windKt, $0.name) > ($1.windKt, $1.name) }
     }
 
+    /// Eastern and Central Pacific only — Central Pacific is the Hawai'i domain, 140°W
+    /// to the dateline. An outlook area whose basin we can't identify is dropped rather
+    /// than guessed at, so nothing Atlantic can slip in.
     var visibleDisturbances: [Disturbance] {
         disturbances
-            .filter { includeAtlantic || ($0.basin?.isPacific ?? true) }
+            .filter { includeAtlantic ? true : ($0.basin?.isPacific == true) }
             .sorted { ($0.prob7Day ?? 0) > ($1.prob7Day ?? 0) }
     }
 
@@ -205,7 +206,7 @@ struct ContentView: View {
         }
         .onChange(of: selection) { _, new in
             // Panes that already react to the selection shouldn't be yanked away from.
-            let selectionAware: Set<Pane> = [.map, .intensity, .models]
+            let selectionAware: Set<Pane> = [.map, .intensity]
             if new != nil, !selectionAware.contains(pane) { pane = .map }
         }
     }
@@ -226,8 +227,6 @@ struct ContentView: View {
             IntensityPane(selection: $selection)
         case .imagery:
             ImageryPane()
-        case .models:
-            ModelsPane(selection: selection)
         case .weatherLab:
             WeatherLabPane()
         case .text:

@@ -173,6 +173,31 @@ var notGzip = false
 do { _ = try Data("not gzip at all, definitely not".utf8).gunzipped() } catch { notGzip = true }
 check(notGzip, "non-gzip input throws instead of returning garbage")
 
+// MARK: Basin scoping — Eastern and Central Pacific only
+
+check(Basin.parse("EP") == .ep, "EP")
+check(Basin.parse("ep") == .ep, "lowercase basin")
+check(Basin.parse(" CP ") == .cp, "padded basin")
+check(Basin.parse("cpac") == .cp, "CPAC spelling")
+check(Basin.parse("Eastern Pacific") == .ep, "spelled-out eastern pacific")
+check(Basin.parse("AL") == .al, "Atlantic")
+check(Basin.parse("atlantic") == .al, "spelled-out atlantic")
+check(Basin.parse(nil) == nil, "missing basin is unknown")
+check(Basin.parse("WP") == nil, "west Pacific is not a basin this app covers")
+check(Basin.parse("garbage") == nil, "unrecognised basin is unknown, not guessed")
+
+check(Basin.ep.isPacific && Basin.cp.isPacific, "EP and CP are both in scope")
+check(!Basin.al.isPacific, "Atlantic is out of scope")
+check(Basin.cp.label == "Central Pacific", "CP is the Hawaii domain")
+
+// Hawaii must sit inside the default view.
+let honolulu = Coord(latitude: 21.3, longitude: -157.9)
+let view = pacificRegion
+check(abs(honolulu.latitude - view.center.latitude) < view.span.latitudeDelta / 2,
+      "Hawaii is within the default latitude span")
+check(abs(honolulu.longitude - view.center.longitude) < view.span.longitudeDelta / 2,
+      "Hawaii is within the default longitude span")
+
 // MARK: Product text extraction
 
 let page = """

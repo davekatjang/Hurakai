@@ -5,6 +5,12 @@ import Compression
 
 typealias Coord = CLLocationCoordinate2D
 
+/// The app's home view: Eastern plus Central Pacific — the Mexican coast west to the
+/// dateline, with Hawai'i (21°N 157°W) comfortably inside.
+let pacificRegion = MKCoordinateRegion(
+    center: Coord(latitude: 18, longitude: -136),
+    span: MKCoordinateSpan(latitudeDelta: 40, longitudeDelta: 92))
+
 /// Smallest region containing `coords`, padded a little.
 func regionCovering(_ coords: [Coord], padding: Double = 1.45) -> MKCoordinateRegion? {
     guard !coords.isEmpty else { return nil }
@@ -148,6 +154,22 @@ enum Basin: String, CaseIterable {
     }
 
     var isPacific: Bool { self != .al }
+
+    /// The GIS outlook layers spell the basin out inconsistently and publish no coded
+    /// domain, so normalise what we've seen and what NHC's shapefiles use.
+    /// ponytail: string match only. An unrecognised value returns nil and — with the
+    /// Atlantic toggle off — is dropped rather than shown, so the failure mode is a
+    /// missing Pacific area, never an Atlantic one leaking into a Pacific-only app.
+    /// If a new spelling ever appears, add it here.
+    static func parse(_ raw: String?) -> Basin? {
+        guard let raw else { return nil }
+        switch raw.uppercased().filter(\.isLetter) {
+        case "EP", "E", "EPAC", "EASTPACIFIC", "EASTERNPACIFIC": return .ep
+        case "CP", "C", "CPAC", "CENTRALPACIFIC": return .cp
+        case "AL", "L", "AT", "ATL", "ATLANTIC": return .al
+        default: return nil
+        }
+    }
 }
 
 struct Storm: Identifiable {
@@ -329,12 +351,12 @@ enum Feed {
     static let goesWestAirMass =
         URL(string: "https://cdn.star.nesdis.noaa.gov/GOES18/ABI/FD/AirMass/1808x1808.jpg")!
 
-    // Third-party sites that block hotlinking or require sign-in — shown as live web views.
+    // Third-party sites. Tropical Tidbits is an outbound link only — its model guidance
+    // comes from the a-deck now. Weather Lab needs a Google sign-in, so it stays a web view.
     static let tropicalTidbits = URL(string: "https://www.tropicaltidbits.com/storminfo/")!
     static func tropicalTidbits(storm: Storm) -> URL {
         URL(string: "https://www.tropicaltidbits.com/storminfo/#\(storm.atcfID)") ?? tropicalTidbits
     }
-    static let tropicalTidbitsModels = URL(string: "https://www.tropicaltidbits.com/analysis/models/?model=gfs&region=epac")!
     static let deepMindWeatherLab = URL(string: "https://deepmind.google.com/science/weatherlab")!
     static let cphc = URL(string: "https://www.nhc.noaa.gov/?cpac")!
 }
@@ -524,7 +546,7 @@ enum NHC {
                 let basinCode = f.str("basin")
                 var d = Disturbance(
                     id: f.int("objectid") ?? 0,
-                    basin: basinCode.flatMap { Basin(rawValue: $0.uppercased()) },
+                    basin: Basin.parse(basinCode),
                     coord: c,
                     prob2Day: f.int("prob2day"),
                     prob7Day: f.int("prob7day"),

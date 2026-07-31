@@ -312,8 +312,7 @@ struct StormOverview: View {
 
                 section("External") {
                     Link(destination: Feed.tropicalTidbits(storm: storm)) {
-                        Label("Tropical Tidbits — \(storm.atcfID) model guidance",
-                              systemImage: "chart.xyaxis.line")
+                        Label("Tropical Tidbits — \(storm.atcfID)", systemImage: "safari")
                             .font(.system(size: 11))
                     }
                     Link(destination: Feed.deepMindWeatherLab) {
@@ -550,39 +549,99 @@ struct IntensityPane: View {
     @EnvironmentObject var tracker: Tracker
     @Binding var selection: Selection?
 
+    private var storms: [Storm] { tracker.visibleStorms }
+
+    /// Follows the global selection when it names a storm, otherwise falls back to the
+    /// first tab. Deliberately doesn't write to `selection` just to show something —
+    /// that would swing the map camera the moment you open this pane.
     private var storm: Storm? {
-        guard case .storm(let id) = selection else { return nil }
-        return tracker.storm(id: id)
+        if case .storm(let id) = selection, let match = storms.first(where: { $0.id == id }) {
+            return match
+        }
+        return storms.first
     }
 
     var body: some View {
-        if let storm {
-            HStack(spacing: 0) {
-                IntensityChart(storm: storm)
+        VStack(spacing: 0) {
+            if storms.isEmpty {
+                empty
+            } else {
+                StormTabBar(storms: storms, activeID: storm?.id, selection: $selection)
                 Divider()
-                ModelGuidance(storm: storm).frame(width: 330)
+                if let storm {
+                    HStack(spacing: 0) {
+                        IntensityChart(storm: storm)
+                        Divider()
+                        ModelGuidance(storm: storm).frame(width: 330)
+                    }
+                    .task(id: storm.id) { await tracker.loadModels(for: storm) }
+                }
             }
-            .task(id: storm.id) { await tracker.loadModels(for: storm) }
-        } else {
-            picker
         }
     }
 
-    private var picker: some View {
-        VStack(spacing: 10) {
+    private var empty: some View {
+        VStack(spacing: 8) {
             Spacer()
             Image(systemName: "chart.line.uptrend.xyaxis")
                 .font(.system(size: 30))
                 .foregroundStyle(.tertiary)
-            Text("Select a system to see its intensity guidance")
+            Text("No active systems in the Eastern or Central Pacific")
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            ForEach(tracker.visibleStorms) { storm in
-                Button(storm.name) { selection = .storm(storm.id) }
-            }
             Spacer()
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// One tab per active Pacific system.
+struct StormTabBar: View {
+    let storms: [Storm]
+    let activeID: String?
+    @Binding var selection: Selection?
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(storms) { storm in
+                    tab(storm, active: storm.id == activeID)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+        }
+    }
+
+    private func tab(_ storm: Storm, active: Bool) -> some View {
+        Button {
+            selection = .storm(storm.id)
+        } label: {
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(storm.tint)
+                    .frame(width: 9, height: 9)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(storm.name)
+                        .font(.system(size: 12, weight: active ? .bold : .medium))
+                    Text("\(storm.basin.rawValue) · \(storm.windKt) kt"
+                         + (storm.category > 0 ? " · C\(storm.category)" : ""))
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(active ? storm.tint.opacity(0.16) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 7))
+            .overlay {
+                RoundedRectangle(cornerRadius: 7)
+                    .strokeBorder(active ? storm.tint.opacity(0.8) : .secondary.opacity(0.25),
+                                  lineWidth: 1)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -604,9 +663,15 @@ struct IntensityChart: View {
 
     private var techs: [String] { tracks.map(\.tech) }
 
+    /// Headroom matters: a ceiling that lands exactly on a threshold pushes that
+    /// line's label out of the chart frame and into the toolbar above it.
     private var windCeiling: Int {
         let peak = samples.map(\.windKt).max() ?? 80
-        return max(((peak + 20) / 10) * 10, 80)
+        return max(((peak + 25) / 10) * 10, 80)
+    }
+
+    private var thresholds: [(kt: Int, label: String, color: Color)] {
+        Palette.intensityThresholds.filter { $0.kt < windCeiling }
     }
 
     private var hourCeiling: Int {
@@ -650,7 +715,7 @@ struct IntensityChart: View {
 
     private var chart: some View {
         Chart {
-            ForEach(Palette.intensityThresholds, id: \.kt) { threshold in
+            ForEach(thresholds, id: \.kt) { threshold in
                 RuleMark(y: .value("Threshold", threshold.kt))
                     .foregroundStyle(threshold.color.opacity(0.45))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
@@ -741,26 +806,30 @@ struct ImageryPane: View {
             }
             .padding(8)
             Divider()
-            ScrollView([.horizontal, .vertical]) {
-                AsyncImage(url: bustedURL) { phase in
-                    switch phase {
-                    case .empty:
-                        ProgressView().frame(width: 400, height: 300)
-                    case .success(let image):
-                        image.resizable().aspectRatio(contentMode: .fit)
-                    case .failure(let error):
-                        VStack(spacing: 6) {
-                            Image(systemName: "exclamationmark.icloud").font(.largeTitle)
-                            Text(error.localizedDescription).font(.caption)
-                        }
-                        .frame(width: 400, height: 300)
-                        .foregroundStyle(.secondary)
-                    @unknown default:
-                        EmptyView()
+            // ponytail: no ScrollView. Inside one, the image gets its ideal size and
+            // `maxHeight: .infinity` never bites — which is exactly why it wouldn't
+            // scale to the window. Scaled to fit the pane instead.
+            AsyncImage(url: bustedURL) { phase in
+                switch phase {
+                case .empty:
+                    ProgressView()
+                case .success(let image):
+                    image
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                case .failure(let error):
+                    VStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.icloud").font(.largeTitle)
+                        Text(error.localizedDescription).font(.caption)
                     }
+                    .foregroundStyle(.secondary)
+                @unknown default:
+                    EmptyView()
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(8)
             .background(Color.black.opacity(0.85))
         }
     }
@@ -814,30 +883,6 @@ struct SourceBanner: View {
     }
 }
 
-struct ModelsPane: View {
-    @EnvironmentObject var tracker: Tracker
-    let selection: Selection?
-
-    var body: some View {
-        VStack(spacing: 0) {
-            SourceBanner(
-                text: "Tropical Tidbits blocks direct image requests, so it is embedded live. "
-                    + (selectedStorm.map { "Showing \($0.atcfID)." } ?? "Showing all active systems."),
-                url: url)
-            Divider()
-            WebView(url: url)
-        }
-    }
-
-    private var selectedStorm: Storm? {
-        if case .storm(let id) = selection { return tracker.storm(id: id) }
-        return nil
-    }
-
-    private var url: URL {
-        selectedStorm.map { Feed.tropicalTidbits(storm: $0) } ?? Feed.tropicalTidbits
-    }
-}
 
 struct WeatherLabPane: View {
     var body: some View {

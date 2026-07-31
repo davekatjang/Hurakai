@@ -6,7 +6,16 @@ Live positions, forecast tracks, uncertainty cones, watches and warnings, and Tr
 Weather Outlook disturbance areas on a clickable MapKit chart — plus advisory text,
 satellite imagery, and the model-guidance sites forecasters actually use.
 
-Eastern and Central Pacific by default; the Atlantic can be toggled on.
+## Scope
+
+Eastern and Central Pacific. Central Pacific is the CPHC domain — 140°W to the dateline,
+which is the Hawai'i basin — and the default map view spans the Mexican coast west past
+Hawai'i to the dateline.
+
+An outlook area whose basin string the app can't identify is dropped rather than guessed at,
+so the failure mode is a missing Pacific area rather than an Atlantic one appearing in a
+Pacific app. The Atlantic can be toggled on explicitly from the Layers menu; it is off by
+default.
 
 ## Screens
 
@@ -23,10 +32,10 @@ Eastern and Central Pacific by default; the Atlantic can be toggled on.
   Includes **GDMN, the Google DeepMind ensemble mean**.
 - **Intensity Models** — the intensity counterpart to the track spaghetti: every technique's
   wind forecast against forecast hour, with Saffir-Simpson thresholds marked and the official
-  forecast drawn heavier. Shares the same model toggles as the map, so turning a technique off
-  in one place turns it off in both. Includes the intensity-only aids (SHIP, LGEM, DSHP, IVCN)
-  that have no track to plot.
-- **Tropical Tidbits** — the site itself, embedded live and deep-linked to the selected storm.
+  forecast drawn heavier. One tab per active Pacific system across the top, so you can switch
+  storms without going back to the map. Shares the same model toggles as the map, so turning a
+  technique off in one place turns it off in both. Includes the intensity-only aids
+  (SHIP, LGEM, DSHP, IVCN) that have no track to plot.
 - **DeepMind Weather Lab** — Google's experimental AI cyclone predictions.
 - **Outlook Text** — the Eastern and Central Pacific Tropical Weather Outlook discussions.
 
@@ -42,7 +51,6 @@ Data refreshes on launch, on ⌘R, and every 10 minutes.
 | NHC / CPHC text products | Public advisories, forecast discussions, Tropical Weather Outlooks | Product pages, `<pre>` extracted |
 | NHC Graphical TWO | 2-day and 7-day outlook graphics | PNG |
 | NOAA NESDIS/STAR | GOES-18 (GOES-West) GeoColor and Air Mass imagery | JPEG |
-| Tropical Tidbits | Model track and intensity guidance | Embedded web view |
 | Google DeepMind Weather Lab | Experimental AI cyclone predictions | Embedded web view |
 
 Both Central Pacific (CPHC) and Eastern Pacific (NHC) systems come through the same feeds —
@@ -69,14 +77,13 @@ intensity chart.
 contributed to NHC's guidance suite, and it arrives with no API key, no GCP project, and no
 sign-in. `GDMI` (interpolated) and `GDM2` appear alongside it.
 
-### Two sources are embedded rather than parsed, on purpose
+Tropical Tidbits itself is not embedded. It returns HTTP 403 to direct image requests — a
+block its operator put there deliberately — and once the a-deck is parsed there is nothing
+left to embed it for. It remains an outbound link from each storm's Overview tab and the
+Sources menu.
 
-- **Tropical Tidbits** returns HTTP 403 to direct image requests, including with a browser
-  user agent. Scraping it would mean defeating a block its operator put there deliberately,
-  so the app embeds the real site instead and deep-links to the selected storm's ATCF id.
-  The underlying model data is read from the a-deck, as above.
-- **Google DeepMind Weather Lab** has no public API and requires a Google sign-in. The app
-  embeds it so you can sign in yourself; it does not handle credentials.
+**Google DeepMind Weather Lab** stays a web view: it has no public API and requires a Google
+sign-in, so the app embeds it for you to sign into yourself and never handles credentials.
 
 ### WeatherNext via BigQuery / Earth Engine — not wired, and probably not needed
 

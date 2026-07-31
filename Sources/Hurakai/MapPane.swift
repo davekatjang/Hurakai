@@ -131,11 +131,7 @@ struct StormMap: View {
     @Binding var layers: LayerToggles
     @Binding var styleChoice: MapStyleChoice
 
-    @State private var camera: MapCameraPosition = .region(StormMap.pacific)
-
-    static let pacific = MKCoordinateRegion(
-        center: Coord(latitude: 17, longitude: -139),
-        span: MKCoordinateSpan(latitudeDelta: 38, longitudeDelta: 78))
+    @State private var camera: MapCameraPosition = .region(pacificRegion)
 
     var body: some View {
         Map(position: $camera) {
@@ -345,7 +341,7 @@ struct StormMap: View {
 
     private var resetButton: some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.6)) { camera = .region(StormMap.pacific) }
+            withAnimation(.easeInOut(duration: 0.6)) { camera = .region(pacificRegion) }
         } label: {
             Label("Whole Basin", systemImage: "arrow.down.left.and.arrow.up.right")
                 .font(.system(size: 11, weight: .medium))
