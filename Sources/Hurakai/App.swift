@@ -131,12 +131,16 @@ final class Tracker: ObservableObject {
 @main
 struct HurakaiApp: App {
     @StateObject private var tracker = Tracker()
+    /// Same key as the toolbar toggle — AppStorage keeps the two in sync. This has to be
+    /// applied at the WindowGroup level; on the split view it never reaches the window.
+    @AppStorage("darkMode") private var darkMode = false
 
     var body: some Scene {
         WindowGroup("Hurakai — Pacific Cyclone Tracker") {
             ContentView()
                 .environmentObject(tracker)
                 .frame(minWidth: 1080, minHeight: 680)
+                .preferredColorScheme(darkMode ? .dark : .light)
         }
         .defaultSize(width: 1500, height: 940)
         .commands {
@@ -167,6 +171,8 @@ struct ContentView: View {
     @State private var pane: Pane = .map
     @State private var layers = LayerToggles()
     @State private var mapStyleChoice = MapStyleChoice.hybrid
+    /// Light by default, and the choice sticks between launches.
+    @AppStorage("darkMode") private var darkMode = false
 
     var body: some View {
         NavigationSplitView {
@@ -192,6 +198,14 @@ struct ContentView: View {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 .help("Reload every source (⌘R)")
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { darkMode.toggle() }
+                } label: {
+                    Label(darkMode ? "Light Mode" : "Dark Mode",
+                          systemImage: darkMode ? "sun.max.fill" : "moon.fill")
+                }
+                .help(darkMode ? "Switch to light mode" : "Switch to dark mode")
 
                 LayerMenu(layers: $layers, style: $mapStyleChoice)
             }

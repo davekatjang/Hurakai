@@ -41,6 +41,18 @@ default.
 
 Data refreshes on launch, on ⌘R, and every 10 minutes.
 
+## Appearance
+
+Light by default, with a moon/sun button in the toolbar to switch to dark. The choice
+persists between launches.
+
+The Saffir-Simpson palette is tuned for dark satellite imagery — pale yellow Cat 1 and a
+white official-forecast line disappear on white — so app chrome (sidebar, tabs, inspector,
+intensity chart) uses light-mode counterparts derived from the same hues, while map overlays
+keep the bright originals because the map always draws on imagery. One transform derives the
+light variant rather than two hand-tuned palettes; achromatic colors go near-black instead
+of grey, which is what keeps `OFCL` legible.
+
 ## Data sources
 
 | Source | What it provides | How |

@@ -3,7 +3,34 @@ import MapKit
 
 // MARK: - Palette (Saffir-Simpson, the colors forecasters expect)
 
+extension Color {
+    /// Resolves against the window's effective appearance, so a colour follows the
+    /// light/dark toggle without every view having to read the environment.
+    static func adaptive(light: Color, dark: Color) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                ? NSColor(dark) : NSColor(light)
+        })
+    }
+}
+
 enum Palette {
+    /// The storm palette is tuned for dark satellite imagery, which is what the map always
+    /// draws on — pale yellow Cat 1 on a white sidebar is invisible. This derives a light
+    /// counterpart by deepening the same hue, so the two modes stay recognisably the same
+    /// colour scheme. Map overlays keep the bright originals; app chrome uses these.
+    /// ponytail: one transform beats hand-tuning two dozen colours twice.
+    static func onLight(_ base: Color) -> Color {
+        let ns = NSColor(base).usingColorSpace(.deviceRGB) ?? .black
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        ns.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        // Achromatic (the white official-forecast line) has no hue to deepen — go near-black.
+        let light = s < 0.05
+            ? Color(hue: Double(h), saturation: 0, brightness: 0.15)
+            : Color(hue: Double(h), saturation: min(Double(s) * 1.5, 1), brightness: Double(b) * 0.55)
+        return .adaptive(light: light, dark: base)
+    }
+
     static let depression = Color(red: 0.37, green: 0.73, blue: 1.00)
     static let storm      = Color(red: 0.00, green: 0.88, blue: 0.92)
     static let cat1       = Color(red: 1.00, green: 1.00, blue: 0.70)
@@ -37,6 +64,14 @@ enum Palette {
         default: return Color(red: 1.0, green: 0.87, blue: 0.30)
         }
     }
+
+    /// Appearance-aware variants, for everything that sits on the app background
+    /// rather than on the map.
+    static func uiModel(_ tech: String) -> Color { onLight(model(tech)) }
+    static func uiRisk(_ level: String?) -> Color { onLight(risk(level)) }
+
+    static let uiIntensityThresholds: [(kt: Int, label: String, color: Color)] =
+        intensityThresholds.map { ($0.kt, $0.label, onLight($0.color)) }
 
     /// Model guidance colors. The named ones match how forecasters expect to see them;
     /// anything else gets a stable hue derived from its technique id.
@@ -79,8 +114,18 @@ extension Storm {
     }
 }
 
+extension Storm {
+    /// For sidebar rows, tabs and the inspector — anything on the app background.
+    var uiTint: Color { Palette.onLight(tint) }
+}
+
 extension ModelTrack {
     var tint: Color { Palette.model(tech) }
+    var uiTint: Color { Palette.uiModel(tech) }
+}
+
+extension ForecastPoint {
+    var uiTint: Color { Palette.onLight(tint) }
 }
 
 extension ForecastPoint {

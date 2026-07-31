@@ -71,7 +71,7 @@ struct StormRow: View {
 
     var body: some View {
         HStack(spacing: 9) {
-            RoundedRectangle(cornerRadius: 2).fill(storm.tint).frame(width: 4, height: 34)
+            RoundedRectangle(cornerRadius: 2).fill(storm.uiTint).frame(width: 4, height: 34)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 5) {
                     Text(storm.name)
@@ -87,7 +87,7 @@ struct StormRow: View {
                 Text("\(storm.windKt) kt / \(storm.windMph) mph" +
                      (storm.pressureMb.map { " · \($0) mb" } ?? ""))
                     .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(storm.tint)
+                    .foregroundStyle(storm.uiTint)
             }
             Spacer(minLength: 0)
         }
@@ -101,7 +101,7 @@ struct DisturbanceRow: View {
     var body: some View {
         HStack(spacing: 9) {
             RoundedRectangle(cornerRadius: 2)
-                .fill(Palette.risk(disturbance.risk7Day ?? disturbance.risk2Day))
+                .fill(Palette.uiRisk(disturbance.risk7Day ?? disturbance.risk2Day))
                 .frame(width: 4, height: 28)
             VStack(alignment: .leading, spacing: 1) {
                 Text(disturbance.basin.map { "\($0.rawValue) disturbance" } ?? "Disturbance")
@@ -171,7 +171,7 @@ struct Inspector: View {
                         .font(.system(size: 17, weight: .black, design: .rounded))
                     Text(storm.headline)
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(storm.tint)
+                        .foregroundStyle(storm.uiTint)
                     Text("\(storm.basin.label) · \(storm.id.uppercased())" +
                          (storm.advisoryNumber.map { " · Adv \($0)" } ?? ""))
                         .font(.system(size: 9, design: .monospaced))
@@ -358,7 +358,7 @@ struct ForecastList: View {
                             Text(point.tau.map { "\($0)h" } ?? "—")
                                 .font(.system(size: 11, weight: .bold, design: .monospaced))
                                 .frame(width: 34, alignment: .leading)
-                                .foregroundStyle(point.tint)
+                                .foregroundStyle(point.uiTint)
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(point.validLabel ?? point.timeLabel ?? "—")
                                     .font(.system(size: 11, weight: .medium))
@@ -461,10 +461,10 @@ struct ModelGuidance: View {
         } label: {
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: on ? "checkmark.square.fill" : "square")
-                    .foregroundStyle(on ? track.tint : .secondary)
+                    .foregroundStyle(on ? track.uiTint : .secondary)
                     .font(.system(size: 12))
                 RoundedRectangle(cornerRadius: 1)
-                    .fill(track.tint)
+                    .fill(track.uiTint)
                     .frame(width: 12, height: 3)
                     .padding(.top, 6)
                 VStack(alignment: .leading, spacing: 1) {
@@ -475,7 +475,7 @@ struct ModelGuidance: View {
                             Text("DeepMind")
                                 .font(.system(size: 8, weight: .heavy))
                                 .padding(.horizontal, 4).padding(.vertical, 1)
-                                .background(track.tint.opacity(0.25), in: Capsule())
+                                .background(track.uiTint.opacity(0.25), in: Capsule())
                         }
                     }
                     Text(track.name)
@@ -619,7 +619,7 @@ struct StormTabBar: View {
         } label: {
             HStack(spacing: 7) {
                 Circle()
-                    .fill(storm.tint)
+                    .fill(storm.uiTint)
                     .frame(width: 9, height: 9)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(storm.name)
@@ -632,11 +632,11 @@ struct StormTabBar: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(active ? storm.tint.opacity(0.16) : Color.clear,
+            .background(active ? storm.uiTint.opacity(0.16) : Color.clear,
                         in: RoundedRectangle(cornerRadius: 7))
             .overlay {
                 RoundedRectangle(cornerRadius: 7)
-                    .strokeBorder(active ? storm.tint.opacity(0.8) : .secondary.opacity(0.25),
+                    .strokeBorder(active ? storm.uiTint.opacity(0.8) : .secondary.opacity(0.25),
                                   lineWidth: 1)
             }
             .contentShape(Rectangle())
@@ -671,7 +671,7 @@ struct IntensityChart: View {
     }
 
     private var thresholds: [(kt: Int, label: String, color: Color)] {
-        Palette.intensityThresholds.filter { $0.kt < windCeiling }
+        Palette.uiIntensityThresholds.filter { $0.kt < windCeiling }
     }
 
     private var hourCeiling: Int {
@@ -737,7 +737,7 @@ struct IntensityChart: View {
                 .interpolationMethod(.monotone)
             }
         }
-        .chartForegroundStyleScale(domain: techs, range: techs.map { Palette.model($0) })
+        .chartForegroundStyleScale(domain: techs, range: techs.map { Palette.uiModel($0) })
         .chartYScale(domain: 0...windCeiling)
         .chartXScale(domain: 0...hourCeiling)
         .chartXAxis {
@@ -830,7 +830,7 @@ struct ImageryPane: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(8)
-            .background(Color.black.opacity(0.85))
+            .background(Color.adaptive(light: Color(white: 0.93), dark: Color(white: 0.08)))
         }
     }
 
