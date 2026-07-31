@@ -1,6 +1,9 @@
 #!/bin/bash
 # Builds Hurakai.app.
 #
+#   ./build.sh              this Mac's architecture only — fast, for development
+#   ./build.sh --universal  arm64 + x86_64, for distribution (roughly twice as slow)
+#
 # ponytail: swiftc directly, no SwiftPM manifest. WebKit and MapKit need a real bundle
 # (bundle id + Info.plist) either way, so the manifest bought nothing — and the
 # PackageDescription lib shipped with Command Line Tools fails to link at any
@@ -10,17 +13,37 @@ cd "$(dirname "$0")"
 
 APP="build/Hurakai.app"
 SDK="$(xcrun --show-sdk-path)"
-ARCH="$(uname -m)"
 DEPLOY="14.0"
+BIN="$APP/Contents/MacOS/Hurakai"
+
+if [[ "${1:-}" == "--universal" ]]; then
+    ARCHS=(arm64 x86_64)
+else
+    ARCHS=("$(uname -m)")
+fi
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 
-swiftc -O \
-    -target "${ARCH}-apple-macosx${DEPLOY}" \
-    -sdk "$SDK" \
-    -o "$APP/Contents/MacOS/Hurakai" \
-    Sources/Hurakai/*.swift
+SLICES=()
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
+
+for arch in "${ARCHS[@]}"; do
+    echo "compiling $arch…"
+    swiftc -O \
+        -target "${arch}-apple-macosx${DEPLOY}" \
+        -sdk "$SDK" \
+        -o "$SCRATCH/Hurakai-$arch" \
+        Sources/Hurakai/*.swift
+    SLICES+=("$SCRATCH/Hurakai-$arch")
+done
+
+if [[ ${#SLICES[@]} -gt 1 ]]; then
+    lipo -create "${SLICES[@]}" -output "$BIN"
+else
+    cp "${SLICES[0]}" "$BIN"
+fi
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -44,4 +67,4 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 codesign --force --sign - "$APP" >/dev/null 2>&1 || echo "note: ad-hoc signing skipped"
-echo "Built $APP"
+echo "Built $APP ($(lipo -archs "$BIN"))"

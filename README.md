@@ -131,7 +131,36 @@ MapKit and WebKit need a real `.app` (bundle id + `Info.plist`) either way, so a
 manifest bought nothing — and the `PackageDescription` library shipped with Command Line
 Tools fails to link at any tools-version.
 
-The bundle is ad-hoc signed. Gatekeeper will ask on first launch since it isn't notarized.
+## Packaging
+
+```bash
+./package.sh
+```
+
+Builds a universal (arm64 + x86_64) app and wraps it in `dist/Hurakai-<version>.dmg` — drag
+to Applications, about 1.3 MB. `hdiutil` ships with macOS, so there is no packaging
+dependency to install. A `.dmg` rather than a `.pkg` because a `.pkg` earns its keep when
+you need install scripts, receipts, or files outside `/Applications`, and this app needs
+none of that.
+
+`./build.sh --universal` does the two-architecture build on its own; plain `./build.sh`
+stays single-arch so development builds stay fast.
+
+### The app is not notarized
+
+It is ad-hoc signed with no Apple Developer ID, so on any Mac that didn't build it, macOS
+will refuse the first launch. Right-click the app and choose **Open**, then **Open** again
+in the dialog; after that it launches normally. If macOS claims the app "is damaged", clear
+the download quarantine flag:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Hurakai.app
+```
+
+The disk image carries a README saying exactly this, so anyone you hand it to isn't left
+guessing. Removing the friction properly means a paid Apple Developer account ($99/year) to
+sign with a Developer ID and notarize the DMG — worth it only if this goes to people who
+won't tolerate the right-click step.
 
 ## Layout
 
