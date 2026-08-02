@@ -12,8 +12,6 @@
 ![DeepMind](https://img.shields.io/badge/Guidance-Google%20DeepMind%20GDMN-4285F4?logo=google&logoColor=white)
 ![Dependencies](https://img.shields.io/badge/dependencies-none-1a7f37)
 
-`macos` `swift` `swiftui` `mapkit` `swift-charts` `hurricane` `tropical-cyclone` `weather` `noaa` `nhc` `cphc` `atcf` `a-deck` `deepmind` `gdmn` `goes` `satellite-imagery` `pacific` `hawaii` `desktop-app`
-
 ![Hurakai tracking Tropical Storm Genevieve, with live GOES-West satellite imagery, the NHC forecast cone, ATCF model guidance and the storm inspector](docs/hurakai.jpg)
 
 ---

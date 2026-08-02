@@ -1,6 +1,7 @@
 build/
 dist/
 .build/
+graphify-out/
 .DS_Store
 *.xcuserstate
 xcuserdata/
