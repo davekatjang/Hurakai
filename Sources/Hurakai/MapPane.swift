@@ -146,28 +146,96 @@ enum MapStyleChoice: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var style: MapStyle {
+    var configuration: MKMapConfiguration {
         switch self {
-        case .hybrid: return .hybrid(elevation: .flat)
-        case .satellite: return .imagery(elevation: .flat)
-        case .standard: return .standard(elevation: .flat)
+        case .hybrid: return MKHybridMapConfiguration(elevationStyle: .flat)
+        case .satellite: return MKImageryMapConfiguration(elevationStyle: .flat)
+        case .standard: return MKStandardMapConfiguration(elevationStyle: .flat)
         }
     }
 }
 
 // MARK: - Map
+//
+// ponytail: this is an MKMapView, not SwiftUI's Map, for one reason — SwiftUI's Map has
+// no tile-overlay API at any deployment target (verified against the SDK), and a
+// georeferenced satellite layer has to be tiles. The SwiftUI pin views are reused as-is
+// by hosting them inside the annotation views, so nothing is lost by dropping down.
 
-private struct MapPath: Identifiable {
-    let id: String
-    let coords: [Coord]
-    let tint: Color
+/// Satellite imagery drawn beneath the storm overlays.
+private func satelliteOverlay() -> MKTileOverlay {
+    let overlay = MKTileOverlay(urlTemplate: Feed.satelliteTileTemplate)
+    overlay.canReplaceMapContent = false     // sits on top of the base map, not instead of it
+    overlay.minimumZ = 1
+    overlay.maximumZ = 7                     // GIBS tops out here; MapKit upsamples past it
+    return overlay
 }
 
-private struct ModelEndpoint: Identifiable {
-    let tech: String
-    let coord: Coord
-    let tint: Color
-    var id: String { tech }
+// Overlay subclasses carry their own styling so the renderer stays a lookup.
+
+private final class StyledPolyline: MKPolyline {
+    var color: NSColor = .white
+    var width: CGFloat = 2
+    var dash: [NSNumber]?
+}
+
+private final class StyledPolygon: MKPolygon {
+    var stroke: NSColor = .white
+    var fill: NSColor = .clear
+    var width: CGFloat = 1.2
+    var dash: [NSNumber]?
+}
+
+/// An annotation whose content is a SwiftUI view. `target` is what clicking it selects;
+/// nil means the pin is decorative and shouldn't take clicks at all.
+private final class PinAnnotation: NSObject, MKAnnotation {
+    let coordinate: CLLocationCoordinate2D
+    let size: CGSize
+    let target: Selection?
+    let content: AnyView
+
+    init(coordinate: CLLocationCoordinate2D, size: CGSize, target: Selection?, content: AnyView) {
+        self.coordinate = coordinate
+        self.size = size
+        self.target = target
+        self.content = content
+    }
+}
+
+/// Lets clicks fall through to the MKAnnotationView so MapKit drives selection.
+private final class PassthroughHost: NSHostingView<AnyView> {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+private final class PinView: MKAnnotationView {
+    private var host: PassthroughHost?
+
+    func apply(_ pin: PinAnnotation) {
+        if let host {
+            host.rootView = pin.content
+        } else {
+            let new = PassthroughHost(rootView: pin.content)
+            new.frame = CGRect(origin: .zero, size: pin.size)
+            addSubview(new)
+            host = new
+        }
+        // A fixed, generously sized container keeps the pin's icon centred on the
+        // coordinate even though its label overflows below.
+        frame = CGRect(origin: .zero, size: pin.size)
+        host?.frame = bounds
+        centerOffset = .zero
+        isEnabled = pin.target != nil
+        canShowCallout = false
+    }
+}
+
+/// Holds the map view so SwiftUI chrome (the reset button) can drive it.
+final class MapController: ObservableObject {
+    weak var mapView: MKMapView?
+
+    func showWholeBasin() {
+        mapView?.setRegion(pacificRegion, animated: true)
+    }
 }
 
 struct StormMap: View {
@@ -175,218 +243,26 @@ struct StormMap: View {
     @Binding var selection: Selection?
     @Binding var layers: LayerToggles
     @Binding var styleChoice: MapStyleChoice
+    @StateObject private var controller = MapController()
 
-    @State private var camera: MapCameraPosition = .region(pacificRegion)
-
-    var body: some View {
-        Map(position: $camera) {
-            overlays
-            stormPins
-            disturbancePins
-        }
-        .mapStyle(styleChoice.style)
-        .mapControls {
-            MapCompass()
-            MapScaleView()
-            MapZoomStepper()
-        }
-        .overlay(alignment: .bottomLeading) { Legend() }
-        .overlay(alignment: .topTrailing) { resetButton }
-        .onChange(of: selection) { _, new in focus(on: new) }
-        .task(id: selectedStorm?.id) {
-            if let storm = selectedStorm { await tracker.loadModels(for: storm) }
-        }
-    }
-
-    // MARK: overlays
-
-    @MapContentBuilder
-    private var overlays: some MapContent {
-        if layers.cone {
-            ForEach(cones) { ring in
-                MapPolygon(coordinates: ring.coords)
-                    .foregroundStyle(ring.tint.opacity(0.16))
-                    .stroke(ring.tint.opacity(0.75), lineWidth: 1.2)
-            }
-        }
-        ForEach(modelPaths) { path in
-            MapPolyline(coordinates: path.coords)
-                .stroke(path.tint.opacity(0.9),
-                        style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
-        }
-        if layers.labels {
-            ForEach(modelEndpoints) { endpoint in
-                Annotation("", coordinate: endpoint.coord, anchor: .center) {
-                    Text(endpoint.tech)
-                        .font(.system(size: 8, weight: .bold, design: .monospaced))
-                        .fixedSize()
-                        .padding(.horizontal, 3)
-                        .padding(.vertical, 1)
-                        .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 3))
-                        .foregroundStyle(endpoint.tint)
-                }
-            }
-            .annotationTitles(.hidden)
-        }
-        if layers.pastTrack {
-            ForEach(pastTracks) { path in
-                MapPolyline(coordinates: path.coords)
-                    .stroke(path.tint.opacity(0.75),
-                            style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [2, 5]))
-            }
-        }
-        if layers.forecastTrack {
-            ForEach(forecastTracks) { path in
-                MapPolyline(coordinates: path.coords)
-                    .stroke(.black.opacity(0.55), style: StrokeStyle(lineWidth: 5, lineCap: .round))
-                MapPolyline(coordinates: path.coords)
-                    .stroke(path.tint, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-            }
-        }
-        if layers.warnings {
-            ForEach(warnings) { path in
-                MapPolyline(coordinates: path.coords)
-                    .stroke(path.tint, style: StrokeStyle(lineWidth: 5, lineCap: .round))
-            }
-        }
-        if layers.disturbances {
-            ForEach(disturbanceAreas) { ring in
-                MapPolygon(coordinates: ring.coords)
-                    .foregroundStyle(ring.tint.opacity(0.18))
-                    .stroke(ring.tint.opacity(0.8),
-                            style: StrokeStyle(lineWidth: 1.5, dash: [7, 4]))
-            }
-        }
-        if layers.forecastPoints {
-            ForEach(forecastPoints) { point in
-                Annotation("", coordinate: point.coord, anchor: .center) {
-                    ForecastPin(point: point, showLabel: layers.labels)
-                        .onTapGesture {
-                            if let id = tracker.stormID(forBin: point.bin) { selection = .storm(id) }
-                        }
-                }
-            }
-            .annotationTitles(.hidden)
-        }
-    }
-
-    @MapContentBuilder
-    private var stormPins: some MapContent {
-        ForEach(tracker.visibleStorms) { storm in
-            Annotation(storm.name, coordinate: storm.coord, anchor: .center) {
-                StormPin(storm: storm,
-                         selected: selection == .storm(storm.id),
-                         showLabel: layers.labels)
-                    .onTapGesture { selection = .storm(storm.id) }
-            }
-        }
-        .annotationTitles(.hidden)
-    }
-
-    @MapContentBuilder
-    private var disturbancePins: some MapContent {
-        if layers.disturbances {
-            ForEach(tracker.visibleDisturbances) { disturbance in
-                Annotation("", coordinate: disturbance.coord, anchor: .center) {
-                    DisturbancePin(disturbance: disturbance,
-                                   selected: selection == .disturbance(disturbance.id))
-                        .onTapGesture { selection = .disturbance(disturbance.id) }
-                }
-            }
-            .annotationTitles(.hidden)
-        }
-    }
-
-    // MARK: derived geometry
-
-    private var activeStorms: [Storm] { tracker.visibleStorms }
-
-    private var cones: [MapPath] {
-        activeStorms.flatMap { storm in
-            tracker.geometry(for: storm).cone.enumerated().map {
-                MapPath(id: "\(storm.id)-cone-\($0.offset)", coords: $0.element, tint: storm.tint)
-            }
-        }
-    }
-
-    private var forecastTracks: [MapPath] {
-        activeStorms.flatMap { storm in
-            tracker.geometry(for: storm).forecastTrack.enumerated().map {
-                MapPath(id: "\(storm.id)-fcst-\($0.offset)", coords: $0.element, tint: storm.tint)
-            }
-        }
-    }
-
-    private var pastTracks: [MapPath] {
-        activeStorms.flatMap { storm in
-            tracker.geometry(for: storm).pastTrack.enumerated().map {
-                MapPath(id: "\(storm.id)-past-\($0.offset)", coords: $0.element, tint: .white)
-            }
-        }
-    }
-
-    private var warnings: [MapPath] {
-        activeStorms.flatMap { storm in
-            tracker.geometry(for: storm).warnings.enumerated().map {
-                MapPath(id: "\(storm.id)-ww-\($0.offset)",
-                        coords: $0.element.path,
-                        tint: Palette.warning($0.element.kind))
-            }
-        }
-    }
-
-    /// Forecast points are noise for every storm at once — show them for the selected storm,
-    /// or for all storms when nothing is selected and there are only a couple of systems.
-    private var forecastPoints: [ForecastPoint] {
-        let show: [Storm]
-        if case .storm(let id) = selection, let s = tracker.storm(id: id) {
-            show = [s]
-        } else {
-            show = activeStorms.count <= 2 ? activeStorms : []
-        }
-        return show.flatMap { tracker.geometry(for: $0).forecastPoints.filter { ($0.tau ?? 0) > 0 } }
-    }
-
-    /// Spaghetti is only legible one storm at a time, so model guidance follows the selection.
     private var selectedStorm: Storm? {
         guard case .storm(let id) = selection else { return nil }
         return tracker.storm(id: id)
     }
 
-    private var shownModels: [ModelTrack] {
-        guard layers.modelTracks, let storm = selectedStorm else { return [] }
-        return tracker.shownModels(for: storm)
-    }
-
-    private var modelPaths: [MapPath] {
-        shownModels.compactMap { track in
-            guard track.hasTrack else { return nil }
-            return MapPath(id: "model-\(track.tech)", coords: track.path, tint: track.tint)
-        }
-    }
-
-    private var modelEndpoints: [ModelEndpoint] {
-        shownModels.compactMap { track in
-            guard track.hasTrack, let last = track.lastPositioned?.coord else { return nil }
-            return ModelEndpoint(tech: track.tech, coord: last, tint: track.tint)
-        }
-    }
-
-    private var disturbanceAreas: [MapPath] {
-        tracker.visibleDisturbances.flatMap { d in
-            d.area.enumerated().map {
-                MapPath(id: "\(d.id)-area-\($0.offset)",
-                        coords: $0.element,
-                        tint: Palette.risk(d.risk7Day ?? d.risk2Day))
+    var body: some View {
+        MapSurface(selection: $selection, layers: $layers,
+                   styleChoice: $styleChoice, controller: controller)
+            .overlay(alignment: .bottomLeading) { Legend() }
+            .overlay(alignment: .topTrailing) { resetButton }
+            .task(id: selectedStorm?.id) {
+                if let storm = selectedStorm { await tracker.loadModels(for: storm) }
             }
-        }
     }
-
-    // MARK: camera
 
     private var resetButton: some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.6)) { camera = .region(pacificRegion) }
+            controller.showWholeBasin()
         } label: {
             Label("Whole Basin", systemImage: "arrow.down.left.and.arrow.up.right")
                 .font(.system(size: 11, weight: .medium))
@@ -398,21 +274,302 @@ struct StormMap: View {
         .foregroundStyle(.white)
         .padding(10)
     }
+}
 
-    private func focus(on selection: Selection?) {
-        guard let selection else { return }
-        var coords: [Coord] = []
-        switch selection {
-        case .storm(let id):
-            guard let storm = tracker.storm(id: id) else { return }
-            let geo = tracker.geometry(for: storm)
-            coords = [storm.coord] + geo.cone.flatMap { $0 } + geo.forecastTrack.flatMap { $0 }
-        case .disturbance(let id):
-            guard let d = tracker.disturbance(id: id) else { return }
-            coords = [d.coord] + d.area.flatMap { $0 }
+private struct MapSurface: NSViewRepresentable {
+    @EnvironmentObject var tracker: Tracker
+    @Binding var selection: Selection?
+    @Binding var layers: LayerToggles
+    @Binding var styleChoice: MapStyleChoice
+    let controller: MapController
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> MKMapView {
+        let map = MKMapView()
+        map.delegate = context.coordinator
+        map.showsCompass = true
+        map.showsScale = true
+        map.showsZoomControls = true
+        map.setRegion(pacificRegion, animated: false)
+        controller.mapView = map
+        return map
+    }
+
+    func updateNSView(_ map: MKMapView, context: Context) {
+        context.coordinator.parent = self
+        controller.mapView = map
+
+        if context.coordinator.style != styleChoice {
+            context.coordinator.style = styleChoice
+            map.preferredConfiguration = styleChoice.configuration
         }
-        guard let region = regionCovering(coords) else { return }
-        withAnimation(.easeInOut(duration: 0.7)) { camera = .region(region) }
+
+        context.coordinator.syncSatellite(on: map, enabled: layers.satellite)
+
+        let revision = context.coordinator.revision(tracker: tracker, layers: layers,
+                                                    selection: selection)
+        if context.coordinator.lastRevision != revision {
+            context.coordinator.lastRevision = revision
+            context.coordinator.rebuild(on: map, tracker: tracker,
+                                        layers: layers, selection: selection)
+        }
+
+        if context.coordinator.lastFocused != selection {
+            context.coordinator.lastFocused = selection
+            context.coordinator.focus(map: map, on: selection, tracker: tracker)
+        }
+    }
+
+    final class Coordinator: NSObject, MKMapViewDelegate {
+        var parent: MapSurface
+        var style: MapStyleChoice?
+        var lastRevision = ""
+        var lastFocused: Selection??
+        private var satellite: MKTileOverlay?
+
+        init(_ parent: MapSurface) { self.parent = parent }
+
+        // MARK: satellite layer
+
+        func syncSatellite(on map: MKMapView, enabled: Bool) {
+            if enabled, satellite == nil {
+                let overlay = satelliteOverlay()
+                satellite = overlay
+                // Below the storm vectors (which go in at .aboveLabels) but above the base map.
+                map.addOverlay(overlay, level: .aboveRoads)
+            } else if !enabled, let overlay = satellite {
+                map.removeOverlay(overlay)
+                satellite = nil
+            }
+        }
+
+        // MARK: change detection
+
+        /// Rebuilding on every SwiftUI update would thrash the map, so overlays are only
+        /// rebuilt when something they depend on actually changed.
+        func revision(tracker: Tracker, layers: LayerToggles, selection: Selection?) -> String {
+            var parts: [String] = []
+            for storm in tracker.visibleStorms {
+                parts.append("\(storm.id):\(storm.advisoryNumber ?? ""):\(storm.windKt)")
+                let geo = tracker.geometry(for: storm)
+                parts.append("g\(geo.cone.count),\(geo.forecastTrack.count),"
+                             + "\(geo.pastTrack.count),\(geo.forecastPoints.count),\(geo.warnings.count)")
+                parts.append("m" + tracker.shownModels(for: storm).map(\.tech).joined(separator: "-"))
+            }
+            for d in tracker.visibleDisturbances { parts.append("d\(d.id):\(d.prob7Day ?? -1)") }
+            parts.append("L\(layers.cone)\(layers.forecastTrack)\(layers.pastTrack)"
+                         + "\(layers.forecastPoints)\(layers.warnings)\(layers.disturbances)"
+                         + "\(layers.modelTracks)\(layers.labels)")
+            switch selection {
+            case .storm(let id): parts.append("s\(id)")
+            case .disturbance(let id): parts.append("x\(id)")
+            case nil: parts.append("none")
+            }
+            return parts.joined(separator: "|")
+        }
+
+        // MARK: building
+
+        func rebuild(on map: MKMapView, tracker: Tracker,
+                     layers: LayerToggles, selection: Selection?) {
+            map.removeAnnotations(map.annotations)
+            for overlay in map.overlays where !(overlay is MKTileOverlay) {
+                map.removeOverlay(overlay)
+            }
+
+            var overlays: [MKOverlay] = []
+            var pins: [PinAnnotation] = []
+
+            let selectedStorm: Storm? = {
+                guard case .storm(let id) = selection else { return nil }
+                return tracker.storm(id: id)
+            }()
+
+            for storm in tracker.visibleStorms {
+                let geo = tracker.geometry(for: storm)
+                let tint = NSColor(storm.tint)
+
+                if layers.cone {
+                    for ring in geo.cone where ring.count > 2 {
+                        overlays.append(polygon(ring, stroke: tint.withAlphaComponent(0.75),
+                                                fill: tint.withAlphaComponent(0.16), width: 1.2))
+                    }
+                }
+                if layers.modelTracks, selectedStorm?.id == storm.id {
+                    for track in tracker.shownModels(for: storm) where track.hasTrack {
+                        overlays.append(line(track.path, color: NSColor(track.tint)
+                            .withAlphaComponent(0.9), width: 1.6))
+                    }
+                }
+                if layers.pastTrack {
+                    for path in geo.pastTrack where path.count > 1 {
+                        overlays.append(line(path, color: NSColor.white.withAlphaComponent(0.75),
+                                             width: 2, dash: [2, 5]))
+                    }
+                }
+                if layers.forecastTrack {
+                    for path in geo.forecastTrack where path.count > 1 {
+                        overlays.append(line(path, color: NSColor.black.withAlphaComponent(0.55),
+                                             width: 5))
+                        overlays.append(line(path, color: tint, width: 2.5))
+                    }
+                }
+                if layers.warnings {
+                    for warning in geo.warnings where warning.path.count > 1 {
+                        overlays.append(line(warning.path,
+                                             color: NSColor(Palette.warning(warning.kind)), width: 5))
+                    }
+                }
+
+                // Forecast points clutter fast — show them for the selected storm, or for
+                // everything when only a couple of systems are up.
+                let showPoints = layers.forecastPoints
+                    && (selectedStorm?.id == storm.id
+                        || (selectedStorm == nil && tracker.visibleStorms.count <= 2))
+                if showPoints {
+                    for point in geo.forecastPoints where (point.tau ?? 0) > 0 {
+                        pins.append(PinAnnotation(
+                            coordinate: point.coord, size: CGSize(width: 64, height: 52),
+                            target: .storm(storm.id),
+                            content: AnyView(ForecastPin(point: point, showLabel: layers.labels))))
+                    }
+                }
+                if layers.modelTracks, layers.labels, selectedStorm?.id == storm.id {
+                    for track in tracker.shownModels(for: storm) where track.hasTrack {
+                        guard let end = track.lastPositioned?.coord else { continue }
+                        pins.append(PinAnnotation(
+                            coordinate: end, size: CGSize(width: 96, height: 26), target: nil,
+                            content: AnyView(ModelEndpointLabel(tech: track.tech, tint: track.tint))))
+                    }
+                }
+
+                pins.append(PinAnnotation(
+                    coordinate: storm.coord, size: CGSize(width: 190, height: 116),
+                    target: .storm(storm.id),
+                    content: AnyView(StormPin(storm: storm,
+                                              selected: selection == .storm(storm.id),
+                                              showLabel: layers.labels))))
+            }
+
+            if layers.disturbances {
+                for d in tracker.visibleDisturbances {
+                    let tint = NSColor(Palette.risk(d.risk7Day ?? d.risk2Day))
+                    for ring in d.area where ring.count > 2 {
+                        overlays.append(polygon(ring, stroke: tint.withAlphaComponent(0.8),
+                                                fill: tint.withAlphaComponent(0.18),
+                                                width: 1.5, dash: [7, 4]))
+                    }
+                    pins.append(PinAnnotation(
+                        coordinate: d.coord, size: CGSize(width: 130, height: 74),
+                        target: .disturbance(d.id),
+                        content: AnyView(DisturbancePin(disturbance: d,
+                                                        selected: selection == .disturbance(d.id)))))
+                }
+            }
+
+            map.addOverlays(overlays, level: .aboveLabels)
+            map.addAnnotations(pins)
+        }
+
+        private func line(_ coords: [Coord], color: NSColor, width: CGFloat,
+                          dash: [NSNumber]? = nil) -> StyledPolyline {
+            var points = coords
+            let polyline = StyledPolyline(coordinates: &points, count: points.count)
+            polyline.color = color
+            polyline.width = width
+            polyline.dash = dash
+            return polyline
+        }
+
+        private func polygon(_ coords: [Coord], stroke: NSColor, fill: NSColor,
+                             width: CGFloat, dash: [NSNumber]? = nil) -> StyledPolygon {
+            var points = coords
+            let poly = StyledPolygon(coordinates: &points, count: points.count)
+            poly.stroke = stroke
+            poly.fill = fill
+            poly.width = width
+            poly.dash = dash
+            return poly
+        }
+
+        // MARK: camera
+
+        func focus(map: MKMapView, on selection: Selection?, tracker: Tracker) {
+            guard let selection else { return }
+            var coords: [Coord] = []
+            switch selection {
+            case .storm(let id):
+                guard let storm = tracker.storm(id: id) else { return }
+                let geo = tracker.geometry(for: storm)
+                coords = [storm.coord] + geo.cone.flatMap { $0 } + geo.forecastTrack.flatMap { $0 }
+            case .disturbance(let id):
+                guard let d = tracker.disturbance(id: id) else { return }
+                coords = [d.coord] + d.area.flatMap { $0 }
+            }
+            guard let region = regionCovering(coords) else { return }
+            map.setRegion(region, animated: true)
+        }
+
+        // MARK: delegate
+
+        func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            if let tile = overlay as? MKTileOverlay {
+                let renderer = MKTileOverlayRenderer(tileOverlay: tile)
+                renderer.alpha = 0.85
+                return renderer
+            }
+            if let poly = overlay as? StyledPolygon {
+                let renderer = MKPolygonRenderer(polygon: poly)
+                renderer.strokeColor = poly.stroke
+                renderer.fillColor = poly.fill
+                renderer.lineWidth = poly.width
+                renderer.lineDashPattern = poly.dash
+                return renderer
+            }
+            if let poly = overlay as? StyledPolyline {
+                let renderer = MKPolylineRenderer(polyline: poly)
+                renderer.strokeColor = poly.color
+                renderer.lineWidth = poly.width
+                renderer.lineCap = .round
+                renderer.lineJoin = .round
+                renderer.lineDashPattern = poly.dash
+                return renderer
+            }
+            return MKOverlayRenderer(overlay: overlay)
+        }
+
+        func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            guard let pin = annotation as? PinAnnotation else { return nil }
+            let view = mapView.dequeueReusableAnnotationView(withIdentifier: "pin") as? PinView
+                ?? PinView(annotation: annotation, reuseIdentifier: "pin")
+            view.annotation = annotation
+            view.apply(pin)
+            return view
+        }
+
+        func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
+            guard let pin = view.annotation as? PinAnnotation, let target = pin.target else { return }
+            // Deselect immediately so the same pin can be clicked again later.
+            mapView.deselectAnnotation(view.annotation, animated: false)
+            if parent.selection != target { parent.selection = target }
+        }
+    }
+}
+
+/// The small technique label at the end of a model track.
+private struct ModelEndpointLabel: View {
+    let tech: String
+    let tint: Color
+
+    var body: some View {
+        Text(tech)
+            .font(.system(size: 9, weight: .bold, design: .monospaced))
+            .fixedSize()
+            .padding(.horizontal, 3)
+            .padding(.vertical, 1)
+            .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 3))
+            .foregroundStyle(tint)
     }
 }
 
@@ -422,6 +579,7 @@ extension Tracker {
         storms.first { $0.bin.uppercased() == bin.uppercased() }?.id
     }
 }
+
 
 // MARK: - Pins
 

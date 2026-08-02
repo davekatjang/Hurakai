@@ -98,7 +98,6 @@ check(storm(wind: 65).windMph == 75, "65 kt is 75 mph")
 check(storm(wind: 85).windMph == 100, "85 kt is 100 mph")
 check(storm(wind: 100).windMph == 115, "100 kt is 115 mph")
 check(storm(wind: 137).windMph == 160, "137 kt is 160 mph")
-check(storm(wind: 85).atcfID == "07E", "ATCF id for Tropical Tidbits")
 check(storm(wind: 85).headline == "Category 2 Hurricane", "headline")
 
 check(Storm.compass(0) == "N", "compass N")

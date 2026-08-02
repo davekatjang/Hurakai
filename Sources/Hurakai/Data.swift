@@ -144,15 +144,6 @@ enum Basin: String, CaseIterable {
         }
     }
 
-    /// Tropical Tidbits / ATCF basin suffix.
-    var atcfSuffix: String {
-        switch self {
-        case .ep: return "E"
-        case .cp: return "C"
-        case .al: return "L"
-        }
-    }
-
     var isPacific: Bool { self != .al }
 
     /// The GIS outlook layers spell the basin out inconsistently and publish no coded
@@ -234,9 +225,6 @@ struct Storm: Identifiable {
 
     /// NHC publishes sustained winds rounded to the nearest 5 mph.
     var windMph: Int { Int((Double(windKt) * 1.15078 / 5).rounded()) * 5 }
-
-    /// ATCF-style short id used by Tropical Tidbits, e.g. "07E".
-    var atcfID: String { String(format: "%02d", stormNumber) + basin.atcfSuffix }
 
     var movementText: String {
         guard let dir = movementDir, let kt = movementKt else { return "Stationary" }
@@ -351,12 +339,15 @@ enum Feed {
     static let goesWestAirMass =
         URL(string: "https://cdn.star.nesdis.noaa.gov/GOES18/ABI/FD/AirMass/1808x1808.jpg")!
 
-    // Third-party sites. Tropical Tidbits is an outbound link only — its model guidance
-    // comes from the a-deck now. Weather Lab needs a Google sign-in, so it stays a web view.
-    static let tropicalTidbits = URL(string: "https://www.tropicaltidbits.com/storminfo/")!
-    static func tropicalTidbits(storm: Storm) -> URL {
-        URL(string: "https://www.tropicaltidbits.com/storminfo/#\(storm.atcfID)") ?? tropicalTidbits
-    }
+    /// GOES-West GeoColor as Web Mercator tiles, via NASA GIBS. `default/default` is
+    /// style/time — the time slot resolves to the most recent imagery, refreshed roughly
+    /// every 10 minutes. GIBS serves `{z}/{y}/{x}`, not the usual `{z}/{x}/{y}`.
+    /// Zoom tops out at 7; MapKit upsamples beyond that.
+    static let satelliteTileTemplate =
+        "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/GOES-West_ABI_GeoColor"
+        + "/default/default/GoogleMapsCompatible_Level7/{z}/{y}/{x}.png"
+
+    // Weather Lab needs a Google sign-in, so it stays a web view rather than a feed.
     static let deepMindWeatherLab = URL(string: "https://deepmind.google.com/science/weatherlab")!
     static let cphc = URL(string: "https://www.nhc.noaa.gov/?cpac")!
 }
@@ -568,9 +559,9 @@ enum NHC {
 
 // MARK: - ATCF model guidance (a-decks)
 //
-// This is the same data Tropical Tidbits plots: every model's track and intensity
-// forecast for a storm, published openly by NHC. It also carries GDMN — the Google
-// DeepMind ensemble mean — so DeepMind guidance arrives here with no API key.
+// Every model's track and intensity forecast for a storm, published openly by NHC —
+// the dataset behind the model plots on third-party cyclone sites. It also carries
+// GDMN, the Google DeepMind ensemble mean, so that guidance needs no API key.
 
 struct ModelPoint: Identifiable {
     let tau: Int               // forecast hour

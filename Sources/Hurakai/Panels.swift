@@ -311,10 +311,6 @@ struct StormOverview: View {
                 }
 
                 section("External") {
-                    Link(destination: Feed.tropicalTidbits(storm: storm)) {
-                        Label("Tropical Tidbits — \(storm.atcfID)", systemImage: "safari")
-                            .font(.system(size: 11))
-                    }
                     Link(destination: Feed.deepMindWeatherLab) {
                         Label("DeepMind Weather Lab", systemImage: "sparkles")
                             .font(.system(size: 11))
@@ -384,8 +380,8 @@ struct ForecastList: View {
     }
 }
 
-/// ATCF model guidance — the same a-deck Tropical Tidbits plots, including Google
-/// DeepMind's GDMN ensemble mean.
+/// ATCF model guidance for the selected storm, including Google DeepMind's GDMN
+/// ensemble mean.
 struct ModelGuidance: View {
     @EnvironmentObject var tracker: Tracker
     let storm: Storm

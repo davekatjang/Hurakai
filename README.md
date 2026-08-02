@@ -14,6 +14,8 @@
 
 `macos` `swift` `swiftui` `mapkit` `swift-charts` `hurricane` `tropical-cyclone` `weather` `noaa` `nhc` `cphc` `atcf` `a-deck` `deepmind` `gdmn` `goes` `satellite-imagery` `pacific` `hawaii` `desktop-app`
 
+![Hurakai tracking Tropical Storm Genevieve, with live GOES-West satellite imagery, the NHC forecast cone, ATCF model guidance and the storm inspector](docs/hurakai.jpg)
+
 ---
 
 ## Contents
@@ -66,8 +68,12 @@ Layers menu; it is off by default.
 - **Map** — every active system on one chart. Selecting a storm zooms to its cone and opens
   an inspector with current intensity, motion, the forecast point table, the full public
   advisory, and the forecast discussion. Layers — cone, forecast track, past track, forecast
-  points, watches and warnings, disturbance areas, model guidance, labels — toggle
-  individually. The base map switches between hybrid, satellite, and standard.
+  points, watches and warnings, disturbance areas, model guidance, **live GOES-West satellite
+  imagery**, labels — toggle individually. The base map switches between hybrid, satellite,
+  and standard.
+- **Satellite overlay** — GOES-West GeoColor draped over the map as Web Mercator tiles from
+  NASA GIBS, refreshed with the satellite (roughly every 10 minutes), so the cloud field and
+  the forecast geometry are readable together. Toggled from the Layers menu; off by default.
 - **Models** (inspector tab) — full ATCF model guidance for the selected storm, drawn as a
   spaghetti plot with labelled endpoints. Each technique toggles individually; featured
   models are enabled by default and "Every technique" reveals the ensemble members. Includes
@@ -94,6 +100,7 @@ Data refreshes on launch, on ⌘R, and every 10 minutes.
 | NHC / CPHC text products | Public advisories, forecast discussions, Tropical Weather Outlooks | HTML, `<pre>` extracted |
 | NHC Graphical TWO | 2-day and 7-day outlook graphics | PNG |
 | NOAA NESDIS/STAR | GOES-18 (GOES-West) GeoColor and Air Mass imagery | JPEG |
+| NASA GIBS | GOES-West GeoColor as Web Mercator tiles, for the map overlay | WMTS |
 | Google DeepMind Weather Lab | Experimental AI cyclone predictions | Embedded web view |
 
 ## Model guidance comes from the a-deck
@@ -120,10 +127,6 @@ Three conventions in the format are handled explicitly:
   absent from the map, present in the intensity chart.
 
 ## Third-party sources
-
-**Tropical Tidbits** is not embedded. It returns HTTP 403 to direct image requests — a block
-its operator set deliberately — and once the a-deck is parsed there is nothing left to embed
-it for. It remains an outbound link from each storm's Overview tab and the Sources menu.
 
 **Google DeepMind Weather Lab** is presented as a web view. It has no public API and requires
 a Google sign-in, so the application renders the site for the user to authenticate with
@@ -223,7 +226,13 @@ Tests/main.swift               assert-based self-checks
 build.sh                       compiles and assembles Hurakai.app
 package.sh                     universal build wrapped in a drag-to-install disk image
 test.sh                        runs the self-checks
+docs/                          README assets
 ```
+
+The map is an `MKMapView` behind an `NSViewRepresentable` rather than SwiftUI's `Map`.
+SwiftUI's `Map` has no tile-overlay API at any deployment target, and a georeferenced
+satellite layer has to be tiles. The SwiftUI pin views are reused unchanged by hosting them
+inside the annotation views, so dropping down costs nothing visually.
 
 ## Not a forecast product
 

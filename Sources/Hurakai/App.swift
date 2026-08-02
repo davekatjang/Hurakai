@@ -15,6 +15,7 @@ struct LayerToggles {
     var warnings = true
     var disturbances = true
     var modelTracks = true
+    var satellite = false
     var labels = true
 }
 
@@ -154,7 +155,6 @@ struct HurakaiApp: App {
             CommandMenu("Sources") {
                 Link("National Hurricane Center", destination: URL(string: "https://www.nhc.noaa.gov")!)
                 Link("Central Pacific Hurricane Center", destination: Feed.cphc)
-                Link("Tropical Tidbits", destination: Feed.tropicalTidbits)
                 Link("Google DeepMind Weather Lab", destination: Feed.deepMindWeatherLab)
                 Divider()
                 Link("GOES-West Imagery (NESDIS)", destination: Feed.goesWestFullDisk)
@@ -304,6 +304,8 @@ struct LayerMenu: View {
             Toggle("Watches & Warnings", isOn: $layers.warnings)
             Toggle("Disturbance Areas", isOn: $layers.disturbances)
             Toggle("Model Guidance", isOn: $layers.modelTracks)
+            Divider()
+            Toggle("Satellite Imagery (GOES-West)", isOn: $layers.satellite)
             Toggle("Labels", isOn: $layers.labels)
             Divider()
             Toggle("Include Atlantic Basin", isOn: $tracker.includeAtlantic)
