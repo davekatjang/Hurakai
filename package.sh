@@ -29,23 +29,29 @@ INSTALL
   Drag Hurakai onto the Applications folder in this window.
 
 FIRST LAUNCH
-  This app is not notarised by Apple, so macOS will refuse to open it the
-  normal way. The first time only:
-
-      Right-click (or Control-click) Hurakai in Applications, choose Open,
-      then click Open in the dialog.
-
-  After that it launches normally. If macOS says the app "is damaged and
-  can't be opened", clear the download quarantine flag:
-
-      xattr -dr com.apple.quarantine /Applications/Hurakai.app
-
-  Both are expected for an app distributed outside the App Store without a
+  This app is not notarised by Apple, so the first time you open it macOS
+  blocks it and says it "could not verify that this app is free of malware".
+  That is expected for any app distributed outside the App Store without a
   paid Apple Developer ID. Nothing is wrong with the app.
+
+  On macOS 15 and later, Control-clicking and choosing Open no longer gets
+  past this -- Apple removed that shortcut. Do one of these instead:
+
+    1. Double-click Hurakai and let it be blocked. Then open
+       System Settings > Privacy & Security, scroll down to Security, and
+       click "Open Anyway" next to the message about Hurakai.
+
+    2. Or run this in Terminal to clear the download quarantine flag:
+
+           xattr -dr com.apple.quarantine /Applications/Hurakai.app
+
+  Either way it is a one-time step. After that it opens normally.
+
+  On macOS 14, Control-click > Open > Open still works.
 
 WHAT IT NEEDS
   macOS 14 or later, and a network connection — every forecast, model and
-  image is fetched live from NOAA/NWS and NESDIS.
+  image is fetched live from NOAA/NWS, NESDIS and NASA GIBS.
 
 Data courtesy NOAA/NWS National Hurricane Center, Central Pacific Hurricane
 Center, and NOAA NESDIS. Not an official forecast product — for warnings and

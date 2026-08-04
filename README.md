@@ -201,17 +201,30 @@ stays single-architecture so development builds remain fast.
 
 ## Code signing status
 
-The bundle is ad-hoc signed with no Apple Developer ID and is not notarized, so macOS will
-refuse the first launch on any Mac that did not build it. Right-click the application,
-choose **Open**, then **Open** again in the dialog; subsequent launches behave normally. If
-macOS reports that the app "is damaged", clear the download quarantine flag:
+The bundle is ad-hoc signed with no Apple Developer ID and is not notarized, so macOS blocks
+the first launch on any Mac that did not build it, reporting that it *"could not verify that
+this app is free of malware"*.
 
-```bash
-xattr -dr com.apple.quarantine /Applications/Hurakai.app
-```
+**On macOS 15 and later**, Control-clicking the app and choosing Open no longer bypasses
+this — Apple removed that path. Use one of:
 
-The disk image ships a README stating both steps. Removing this friction requires a paid
-Apple Developer account to sign with a Developer ID and notarize the disk image.
+- **System Settings.** Try to open the app once and let it be blocked, then go to
+  **System Settings → Privacy & Security**, scroll to the Security section, and click
+  **Open Anyway** next to the message about Hurakai.
+- **Terminal.** Clear the quarantine flag the browser attached on download:
+
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/Hurakai.app
+  ```
+
+Either way it is a one-time step; the app launches normally afterwards.
+
+**On macOS 14**, Control-click → **Open** → **Open** still works.
+
+Building from source sidesteps all of this: locally compiled bundles are never quarantined,
+so `./build.sh && open build/Hurakai.app` just runs. Removing the friction for downloaded
+copies requires a paid Apple Developer account to sign with a Developer ID and notarize the
+disk image.
 
 ## Repository layout
 
